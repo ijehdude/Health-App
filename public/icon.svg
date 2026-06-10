@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#2563eb"/>
+  <!-- leaf -->
+  <path d="M256 96c-72 48-104 112-96 184 6 54 42 96 96 112 54-16 90-58 96-112 8-72-24-136-96-184z" fill="#ffffff" opacity="0.95"/>
+  <path d="M256 140v228" stroke="#2563eb" stroke-width="20" stroke-linecap="round"/>
+  <path d="M256 210l-44-34M256 270l48-38" stroke="#2563eb" stroke-width="18" stroke-linecap="round"/>
+  <!-- pulse line -->
+  <path d="M120 416h80l28-48 40 72 32-52h92" stroke="#ffffff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

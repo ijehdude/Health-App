@@ -1,0 +1,17 @@
+{
+  "name": "NutriCoach — AI Nutrition & Fitness Coach",
+  "short_name": "NutriCoach",
+  "description": "Log meals with a photo or text, get a full AI nutrient breakdown against your personal targets, and receive food and workout recommendations.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
