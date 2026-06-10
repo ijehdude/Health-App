@@ -48,8 +48,11 @@ Set `AI_PROVIDER=openai` (and `OPENAI_API_KEY`) — no code changes needed.
 
 | Provider | Food analysis (vision) | Insights |
 |---|---|---|
-| `gemini` (default) | gemini-1.5-flash | gemini-1.5-flash |
+| `gemini` (default) | gemini-2.5-flash | gemini-2.5-flash-lite |
 | `openai` | gpt-4o | gpt-4o-mini |
+
+To pin different models, set `GEMINI_MODEL`/`GEMINI_MODEL_MINI` (or
+`OPENAI_MODEL`/`OPENAI_MODEL_MINI`) in your environment.
 
 ## 3. Optional: Supabase cloud sync
 

@@ -11,8 +11,16 @@ type Provider = 'gemini' | 'openai';
 type ModelTier = 'full' | 'mini';
 
 const MODELS: Record<Provider, Record<ModelTier, string>> = {
-  gemini: { full: 'gemini-1.5-flash', mini: 'gemini-1.5-flash' },
-  openai: { full: 'gpt-4o', mini: 'gpt-4o-mini' },
+  // gemini-1.5-flash was retired for new API keys; 2.5-flash is the current
+  // free-tier flash model. Override per-tier with env vars if needed.
+  gemini: {
+    full: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+    mini: process.env.GEMINI_MODEL_MINI ?? 'gemini-2.5-flash-lite',
+  },
+  openai: {
+    full: process.env.OPENAI_MODEL ?? 'gpt-4o',
+    mini: process.env.OPENAI_MODEL_MINI ?? 'gpt-4o-mini',
+  },
 };
 
 export function getProvider(): Provider {
