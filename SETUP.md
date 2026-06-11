@@ -48,10 +48,13 @@ Set `AI_PROVIDER=openai` (and `OPENAI_API_KEY`) — no code changes needed.
 
 | Provider | Food analysis (vision) | Insights |
 |---|---|---|
-| `gemini` (default) | gemini-2.5-flash | gemini-2.5-flash-lite |
+| `gemini` (default) | gemini-3.5-flash | gemini-3.1-flash-lite |
 | `openai` | gpt-4o | gpt-4o-mini |
 
-To pin different models, set `GEMINI_MODEL`/`GEMINI_MODEL_MINI` (or
+Gemini calls retry 503/429 responses with exponential backoff (1s/2s/4s), then
+fall back to `gemini-3.1-flash-lite` for one attempt before surfacing a
+friendly "AI is busy" message. To pin different models, set
+`GEMINI_MODEL`/`GEMINI_MODEL_MINI`/`GEMINI_MODEL_FALLBACK` (or
 `OPENAI_MODEL`/`OPENAI_MODEL_MINI`) in your environment.
 
 ## 3. Optional: Supabase cloud sync

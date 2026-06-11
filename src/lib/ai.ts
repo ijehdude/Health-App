@@ -11,17 +11,39 @@ type Provider = 'gemini' | 'openai';
 type ModelTier = 'full' | 'mini';
 
 const MODELS: Record<Provider, Record<ModelTier, string>> = {
-  // gemini-1.5-flash was retired for new API keys; 2.5-flash is the current
-  // free-tier flash model. Override per-tier with env vars if needed.
+  // Override per-tier with env vars if needed.
   gemini: {
-    full: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
-    mini: process.env.GEMINI_MODEL_MINI ?? 'gemini-2.5-flash-lite',
+    full: process.env.GEMINI_MODEL ?? 'gemini-3.5-flash',
+    mini: process.env.GEMINI_MODEL_MINI ?? 'gemini-3.1-flash-lite',
   },
   openai: {
     full: process.env.OPENAI_MODEL ?? 'gpt-4o',
     mini: process.env.OPENAI_MODEL_MINI ?? 'gpt-4o-mini',
   },
 };
+
+/** Tried once when the primary Gemini model is overloaded or unavailable. */
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_MODEL_FALLBACK ?? 'gemini-3.1-flash-lite';
+
+const BUSY_MESSAGE = 'Our AI is busy right now — please try again in a minute.';
+
+/** Backoff before each retry; only 503 (overloaded) and 429 (rate limit) retry. */
+const RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isRetryableStatus = (status: number) => status === 503 || status === 429;
+
+class GeminiHttpError extends Error {
+  constructor(
+    public status: number,
+    public body: string,
+    public model: string
+  ) {
+    super(`Gemini API error (${status}) from ${model}: ${body.slice(0, 300)}`);
+    this.name = 'GeminiHttpError';
+  }
+}
 
 export function getProvider(): Provider {
   return process.env.AI_PROVIDER === 'openai' ? 'openai' : 'gemini';
@@ -44,10 +66,60 @@ export async function aiGenerateJson(req: AIRequest): Promise<unknown> {
 }
 
 async function callGemini(req: AIRequest): Promise<string> {
+  const primary = MODELS.gemini[req.tier];
+
+  try {
+    return await callGeminiWithRetry(req, primary);
+  } catch (err) {
+    if (!(err instanceof GeminiHttpError)) throw err;
+
+    // Fall back when the primary is overloaded/rate-limited (retries exhausted)
+    // or the model id is unknown to this API key (404).
+    const shouldFallback =
+      (isRetryableStatus(err.status) || err.status === 404) && primary !== GEMINI_FALLBACK_MODEL;
+    if (!shouldFallback) {
+      console.error('[ai] Gemini request failed:', err.message);
+      throw isRetryableStatus(err.status) ? new Error(BUSY_MESSAGE) : err;
+    }
+
+    console.error(
+      `[ai] ${primary} failed with ${err.status}; falling back to ${GEMINI_FALLBACK_MODEL}.`,
+      err.body
+    );
+    try {
+      return await callGeminiModel(req, GEMINI_FALLBACK_MODEL);
+    } catch (fallbackErr) {
+      console.error('[ai] Fallback model also failed:', fallbackErr);
+      throw new Error(BUSY_MESSAGE);
+    }
+  }
+}
+
+/** Calls one model, retrying 503/429 with exponential backoff (1s, 2s, 4s). */
+async function callGeminiWithRetry(req: AIRequest, model: string): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callGeminiModel(req, model);
+    } catch (err) {
+      const retryable =
+        err instanceof GeminiHttpError &&
+        isRetryableStatus(err.status) &&
+        attempt < RETRY_DELAYS_MS.length;
+      if (!retryable) throw err;
+      const delay = RETRY_DELAYS_MS[attempt];
+      console.error(
+        `[ai] ${model} returned ${(err as GeminiHttpError).status}; ` +
+          `retry ${attempt + 1}/${RETRY_DELAYS_MS.length} in ${delay}ms.`
+      );
+      await sleep(delay);
+    }
+  }
+}
+
+async function callGeminiModel(req: AIRequest, model: string): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY is not set. Add it to .env.local (see .env.example).');
 
-  const model = MODELS.gemini[req.tier];
   const parts: unknown[] = [{ text: `${req.system}\n\n${req.text}` }];
   if (req.imageB64) {
     parts.push({
@@ -68,8 +140,7 @@ async function callGemini(req: AIRequest): Promise<string> {
   );
 
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Gemini API error (${res.status}): ${body.slice(0, 300)}`);
+    throw new GeminiHttpError(res.status, await res.text(), model);
   }
 
   const data = (await res.json()) as {

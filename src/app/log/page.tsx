@@ -47,9 +47,30 @@ const CONFIDENCE_PILL: Record<Confidence, string> = {
 
 const KEY_MICROS = ['iron', 'calcium', 'vitaminC', 'vitaminD', 'potassium', 'vitaminB12'] as const;
 
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // ~10 MB
+
+const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+
+const EXTENSION_MIME: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+};
+
+/** Browsers often report no MIME type for HEIC — fall back to the extension. */
+function resolveImageMime(file: File): string | null {
+  if (ACCEPTED_IMAGE_TYPES.includes(file.type)) return file.type;
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return EXTENSION_MIME[ext] ?? null;
+}
+
 export default function LogPage() {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const [tab, setTab] = useState<'photo' | 'text'>('photo');
   const [mealType, setMealType] = useState<MealType>(autoMealType);
@@ -63,19 +84,22 @@ export default function LogPage() {
   const [error, setError] = useState<string | null>(null);
 
   const handleFile = useCallback((file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setError('Please choose an image file.');
+    const mime = resolveImageMime(file);
+    if (!mime) {
+      setError('That file type isn’t supported — please choose a JPG, PNG, WebP or HEIC image.');
       return;
     }
-    if (file.size > 8 * 1024 * 1024) {
-      setError('Image is too large (max 8 MB).');
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError(
+        `That image is ${(file.size / (1024 * 1024)).toFixed(1)} MB — the limit is 10 MB. Try a smaller photo.`
+      );
       return;
     }
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
       const b64 = dataUrl.split(',')[1];
-      setImage({ b64, mime: file.type, dataUrl });
+      setImage({ b64, mime, dataUrl });
       setError(null);
     };
     reader.readAsDataURL(file);
@@ -289,9 +313,7 @@ export default function LogPage() {
               </button>
             </div>
           ) : (
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
+            <div
               onDragOver={(e) => {
                 e.preventDefault();
                 setDragging(true);
@@ -304,24 +326,53 @@ export default function LogPage() {
                 if (file) handleFile(file);
               }}
               className={cn(
-                'flex w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed py-12 transition-colors',
+                'flex w-full flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed px-4 py-10 transition-colors',
                 dragging
                   ? 'border-primary-500 bg-primary-50'
-                  : 'border-slate-200 bg-slate-50 hover:border-primary-300'
+                  : 'border-slate-200 bg-slate-50'
               )}
             >
               <Upload size={28} className="text-slate-400" />
               <span className="text-sm font-medium text-slate-600">
-                Drag & drop a photo, or tap to select
+                Drag & drop a photo here, or
               </span>
-              <span className="text-xs text-slate-400">Camera opens on mobile · JPG/PNG, max 8 MB</span>
-            </button>
+              <div className="flex w-full max-w-sm flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  className="btn-primary flex-1"
+                  onClick={() => cameraInputRef.current?.click()}
+                >
+                  <Camera size={16} /> Take Photo
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary flex-1"
+                  onClick={() => galleryInputRef.current?.click()}
+                >
+                  <Upload size={16} /> Upload Photo
+                </button>
+              </div>
+              <span className="text-xs text-slate-400">JPG, PNG, WebP or HEIC · max 10 MB</span>
+            </div>
           )}
+          {/* Camera capture (mobile opens the camera; desktop falls back to a file picker) */}
           <input
-            ref={fileInputRef}
+            ref={cameraInputRef}
             type="file"
             accept="image/*"
             capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFile(file);
+              e.target.value = '';
+            }}
+          />
+          {/* Gallery / file picker (no capture attribute) */}
+          <input
+            ref={galleryInputRef}
+            type="file"
+            accept={ACCEPTED_IMAGE_TYPES.join(',')}
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
