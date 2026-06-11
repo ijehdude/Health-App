@@ -30,6 +30,13 @@ const BUSY_MESSAGE = 'Our AI is busy right now — please try again in a minute.
 /** Backoff before each retry; only 503 (overloaded) and 429 (rate limit) retry. */
 const RETRY_DELAYS_MS = [1000, 2000, 4000];
 
+/**
+ * Hard cap per Gemini request — overloaded models sometimes accept a request
+ * and never respond. Treated as a 504, which skips retries but still allows
+ * one fallback attempt, keeping the route inside Vercel's 60s budget.
+ */
+const PER_CALL_TIMEOUT_MS = 25_000;
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const isRetryableStatus = (status: number) => status === 503 || status === 429;
@@ -73,13 +80,14 @@ async function callGemini(req: AIRequest): Promise<string> {
   } catch (err) {
     if (!(err instanceof GeminiHttpError)) throw err;
 
-    // Fall back when the primary is overloaded/rate-limited (retries exhausted)
-    // or the model id is unknown to this API key (404).
+    // Fall back when the primary is overloaded/rate-limited (retries exhausted),
+    // timed out (504), or the model id is unknown to this API key (404).
     const shouldFallback =
-      (isRetryableStatus(err.status) || err.status === 404) && primary !== GEMINI_FALLBACK_MODEL;
+      (isRetryableStatus(err.status) || err.status === 404 || err.status === 504) &&
+      primary !== GEMINI_FALLBACK_MODEL;
     if (!shouldFallback) {
       console.error('[ai] Gemini request failed:', err.message);
-      throw isRetryableStatus(err.status) ? new Error(BUSY_MESSAGE) : err;
+      throw isRetryableStatus(err.status) || err.status === 504 ? new Error(BUSY_MESSAGE) : err;
     }
 
     console.error(
@@ -127,17 +135,26 @@ async function callGeminiModel(req: AIRequest, model: string): Promise<string> {
     });
   }
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts }],
-        generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
-      }),
+  let res: Response;
+  try {
+    res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+          generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+        }),
+        signal: AbortSignal.timeout(PER_CALL_TIMEOUT_MS),
+      }
+    );
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new GeminiHttpError(504, `No response within ${PER_CALL_TIMEOUT_MS}ms`, model);
     }
-  );
+    throw err;
+  }
 
   if (!res.ok) {
     throw new GeminiHttpError(res.status, await res.text(), model);

@@ -67,6 +67,70 @@ function resolveImageMime(file: File): string | null {
   return EXTENSION_MIME[ext] ?? null;
 }
 
+/** Longest side of the normalized JPEG sent to the AI. */
+const MAX_IMAGE_DIMENSION = 1536;
+
+/** Thrown when the browser cannot decode the image at all (e.g. HEIC on older WebKit). */
+class UnsupportedImageError extends Error {
+  constructor() {
+    super('Browser could not decode this image format.');
+    this.name = 'UnsupportedImageError';
+  }
+}
+
+/**
+ * Normalizes any uploaded/taken photo to JPEG client-side: decode (with an
+ * <img> object-URL fallback for formats createImageBitmap rejects), downscale
+ * to max 1536px on the longest side, re-encode at quality 0.85. This makes
+ * iPhone HEIC photos safe before they reach the data-URL/Gemini pipeline.
+ */
+async function convertToJpeg(file: File): Promise<{ b64: string; dataUrl: string }> {
+  let source: ImageBitmap | HTMLImageElement;
+  let objectUrl: string | null = null;
+
+  try {
+    source = await createImageBitmap(file);
+  } catch {
+    objectUrl = URL.createObjectURL(file);
+    try {
+      source = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new UnsupportedImageError());
+        img.src = objectUrl!;
+      });
+    } catch (err) {
+      URL.revokeObjectURL(objectUrl);
+      throw err instanceof UnsupportedImageError ? err : new UnsupportedImageError();
+    }
+  }
+
+  try {
+    const width = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
+    const height = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
+    if (!width || !height) throw new UnsupportedImageError();
+
+    const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 2D context unavailable.');
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    // Split on the first comma only — no assumptions about the mime prefix.
+    const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    if (!dataUrl.startsWith('data:image/jpeg') || !b64) {
+      throw new UnsupportedImageError();
+    }
+    return { b64, dataUrl };
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    if (source instanceof ImageBitmap) source.close();
+  }
+}
+
 export default function LogPage() {
   const router = useRouter();
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -83,9 +147,9 @@ export default function LogPage() {
   const [result, setResult] = useState<AnalyseFoodResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleFile = useCallback((file: File) => {
-    const mime = resolveImageMime(file);
-    if (!mime) {
+  const handleFile = useCallback(async (file: File) => {
+    setError(null);
+    if (!resolveImageMime(file)) {
       setError('That file type isn’t supported — please choose a JPG, PNG, WebP or HEIC image.');
       return;
     }
@@ -95,14 +159,25 @@ export default function LogPage() {
       );
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const b64 = dataUrl.split(',')[1];
-      setImage({ b64, mime, dataUrl });
-      setError(null);
-    };
-    reader.readAsDataURL(file);
+    try {
+      // Everything is re-encoded as JPEG, so the preview, the data-URL split
+      // and the Gemini mime type are format-independent from here on.
+      const { b64, dataUrl } = await convertToJpeg(file);
+      setImage({ b64, mime: 'image/jpeg', dataUrl });
+    } catch (err) {
+      console.error('[log] image conversion failed', {
+        step: 'convertToJpeg',
+        fileName: file.name,
+        fileType: file.type || '(empty)',
+        fileSizeBytes: file.size,
+        error: err,
+      });
+      setError(
+        err instanceof UnsupportedImageError
+          ? 'This photo format isn’t supported — please choose a JPEG or PNG, or screenshot the photo and upload that.'
+          : 'Could not process that image — please try a different photo.'
+      );
+    }
   }, []);
 
   const analyse = async () => {
@@ -122,6 +197,14 @@ export default function LogPage() {
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed. Please try again.');
       setResult(data as AnalyseFoodResponse);
     } catch (err) {
+      console.error('[log] analyse failed', {
+        step: 'analyse-food request',
+        mode: tab,
+        imageMime: image?.mime ?? null,
+        imageB64Length: image?.b64.length ?? 0,
+        textLength: text.trim().length,
+        error: err,
+      });
       setError(err instanceof Error ? err.message : 'Analysis failed. Please try again.');
     } finally {
       setAnalysing(false);
