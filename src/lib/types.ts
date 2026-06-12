@@ -190,6 +190,8 @@ export interface FoodLog {
   confidence: Confidence;
   warningMessage?: string;
   notes?: string;
+  /** Normalized JPEG data URLs of the meal photos (max 5). */
+  photos?: string[];
   createdAt: string; // ISO datetime
   synced: 0 | 1;
 }

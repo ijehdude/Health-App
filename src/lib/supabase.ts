@@ -32,6 +32,7 @@ export async function getAccessToken(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 const SYNCED_EVENT = 'nutricoach:synced';
+const LAST_SYNC_KEY = 'nutricoach:last-synced';
 
 /** Subscribe to "local data changed after a cloud pull" (returns unsubscribe). */
 export function onSynced(callback: () => void): () => void {
@@ -39,7 +40,26 @@ export function onSynced(callback: () => void): () => void {
   return () => window.removeEventListener(SYNCED_EVENT, callback);
 }
 
-export async function fullSync(): Promise<{ pushed: number; pulled: number }> {
+/** ISO timestamp of the last successful sync on this device, if any. */
+export function getLastSyncedAt(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(LAST_SYNC_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export interface SyncResult {
+  pushed: number;
+  pulled: number;
+  /** Consistency check: meals in the cloud vs on this device after syncing. */
+  cloudMeals: number;
+  localMeals: number;
+  at: string; // ISO timestamp
+}
+
+export async function fullSync(): Promise<SyncResult> {
   const supabase = getSupabase();
   if (!supabase) throw new Error('Cloud sync is not configured.');
   const { data: auth } = await supabase.auth.getUser();
@@ -50,10 +70,24 @@ export async function fullSync(): Promise<{ pushed: number; pulled: number }> {
   const pulled = await pullFromCloud(supabase, userId);
   const pushed = await pushToCloud(supabase, userId);
 
-  if (typeof window !== 'undefined' && pulled > 0) {
-    window.dispatchEvent(new CustomEvent(SYNCED_EVENT));
+  const { count, error: countErr } = await supabase
+    .from('food_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId);
+  if (countErr) throw new Error(`Could not verify cloud meal count: ${countErr.message}`);
+  const cloudMeals = count ?? 0;
+  const localMeals = await db.foodLogs.count();
+
+  const at = new Date().toISOString();
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(LAST_SYNC_KEY, at);
+    } catch {
+      // ignore
+    }
+    if (pulled > 0) window.dispatchEvent(new CustomEvent(SYNCED_EVENT));
   }
-  return { pushed, pulled };
+  return { pushed, pulled, cloudMeals, localMeals, at };
 }
 
 /** Fire-and-forget sync; failures are logged and retried on the next trigger. */

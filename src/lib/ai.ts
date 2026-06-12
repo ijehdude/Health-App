@@ -56,11 +56,16 @@ export function getProvider(): Provider {
   return process.env.AI_PROVIDER === 'openai' ? 'openai' : 'gemini';
 }
 
+export interface AIImage {
+  b64: string;
+  mimeType?: string;
+}
+
 export interface AIRequest {
   system: string;
   text: string;
-  imageB64?: string;
-  mimeType?: string;
+  /** Zero or more images, sent as parts of one request. */
+  images?: AIImage[];
   tier: ModelTier;
 }
 
@@ -137,9 +142,9 @@ async function callGeminiModel(req: AIRequest, model: string): Promise<string> {
   if (!key) throw new Error('GEMINI_API_KEY is not set. Add it to .env.local (see .env.example).');
 
   const parts: unknown[] = [{ text: `${req.system}\n\n${req.text}` }];
-  if (req.imageB64) {
+  for (const img of req.images ?? []) {
     parts.push({
-      inline_data: { mime_type: req.mimeType ?? 'image/jpeg', data: req.imageB64 },
+      inline_data: { mime_type: img.mimeType ?? 'image/jpeg', data: img.b64 },
     });
   }
 
@@ -181,10 +186,10 @@ async function callOpenAI(req: AIRequest): Promise<string> {
   if (!key) throw new Error('OPENAI_API_KEY is not set. Add it to .env.local (see .env.example).');
 
   const content: unknown[] = [{ type: 'text', text: req.text }];
-  if (req.imageB64) {
+  for (const img of req.images ?? []) {
     content.push({
       type: 'image_url',
-      image_url: { url: `data:${req.mimeType ?? 'image/jpeg'};base64,${req.imageB64}` },
+      image_url: { url: `data:${img.mimeType ?? 'image/jpeg'};base64,${img.b64}` },
     });
   }
 

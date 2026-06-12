@@ -65,6 +65,18 @@ export async function getFoodLogsByDateRange(start: string, end: string): Promis
   return db.foodLogs.where('date').between(start, end, true, true).sortBy('createdAt');
 }
 
+/**
+ * Updates a saved meal in place (same id/createdAt, so the cloud upsert on
+ * (user_id, created_at) overwrites the existing row). Marks it unsynced and
+ * recomputes the day's summary so Dashboard totals reflect the change.
+ */
+export async function updateFoodLog(id: number, changes: Partial<FoodLog>): Promise<void> {
+  const log = await db.foodLogs.get(id);
+  if (!log) throw new Error('Meal not found.');
+  await db.foodLogs.update(id, { ...changes, synced: 0 });
+  await recomputeDailySummary(changes.date ?? log.date);
+}
+
 export async function deleteFoodLog(id: number): Promise<void> {
   const log = await db.foodLogs.get(id);
   await db.foodLogs.delete(id);

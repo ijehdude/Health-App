@@ -2,18 +2,20 @@
 
 /* eslint-disable @next/next/no-img-element */
 import { useRouter } from 'next/navigation';
-import { useCallback, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   AlertTriangle,
   Camera,
   Check,
   Loader2,
   Pencil,
+  Plus,
   Sparkles,
   Type,
   Upload,
   X,
 } from 'lucide-react';
+import CorrectionEditor from '@/components/CorrectionEditor';
 import { addFoodLog } from '@/lib/db';
 import { backgroundSync, getAccessToken } from '@/lib/supabase';
 import {
@@ -49,6 +51,8 @@ const CONFIDENCE_PILL: Record<Confidence, string> = {
 const KEY_MICROS = ['iron', 'calcium', 'vitaminC', 'vitaminD', 'potassium', 'vitaminB12'] as const;
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // ~10 MB
+
+const MAX_PHOTOS = 5;
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
 
@@ -139,7 +143,7 @@ export default function LogPage() {
 
   const [tab, setTab] = useState<'photo' | 'text'>('photo');
   const [mealType, setMealType] = useState<MealType>(autoMealType);
-  const [image, setImage] = useState<{ b64: string; mime: string; dataUrl: string } | null>(null);
+  const [images, setImages] = useState<{ b64: string; mime: string; dataUrl: string }[]>([]);
   const [dragging, setDragging] = useState(false);
   const [text, setText] = useState('');
   const [photoContext, setPhotoContext] = useState('');
@@ -147,42 +151,59 @@ export default function LogPage() {
   const [analysing, setAnalysing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<AnalyseFoodResponse | null>(null);
-  const [correction, setCorrection] = useState('');
-  const [correcting, setCorrecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleFile = useCallback(async (file: File) => {
+  const handleFiles = async (files: File[]) => {
     setError(null);
-    if (!resolveImageMime(file)) {
-      setError('That file type isn’t supported — please choose a JPG, PNG, WebP or HEIC image.');
+    if (files.length === 0) return;
+
+    const room = MAX_PHOTOS - images.length;
+    if (room <= 0) {
+      setError(`You can attach up to ${MAX_PHOTOS} photos per meal — remove one to add another.`);
       return;
     }
-    if (file.size > MAX_IMAGE_BYTES) {
+    if (files.length > room) {
       setError(
-        `That image is ${(file.size / (1024 * 1024)).toFixed(1)} MB — the limit is 10 MB. Try a smaller photo.`
-      );
-      return;
-    }
-    try {
-      // Everything is re-encoded as JPEG, so the preview, the data-URL split
-      // and the Gemini mime type are format-independent from here on.
-      const { b64, dataUrl } = await convertToJpeg(file);
-      setImage({ b64, mime: 'image/jpeg', dataUrl });
-    } catch (err) {
-      console.error('[log] image conversion failed', {
-        step: 'convertToJpeg',
-        fileName: file.name,
-        fileType: file.type || '(empty)',
-        fileSizeBytes: file.size,
-        error: err,
-      });
-      setError(
-        err instanceof UnsupportedImageError
-          ? 'This photo format isn’t supported — please choose a JPEG or PNG, or screenshot the photo and upload that.'
-          : 'Could not process that image — please try a different photo.'
+        `You can attach up to ${MAX_PHOTOS} photos per meal — only the first ${room} ${room === 1 ? 'was' : 'were'} added.`
       );
     }
-  }, []);
+
+    const added: { b64: string; mime: string; dataUrl: string }[] = [];
+    for (const file of files.slice(0, room)) {
+      if (!resolveImageMime(file)) {
+        setError(`"${file.name}" isn’t a supported type — use JPG, PNG, WebP or HEIC.`);
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        setError(
+          `"${file.name}" is ${(file.size / (1024 * 1024)).toFixed(1)} MB — the limit is 10 MB per photo.`
+        );
+        continue;
+      }
+      try {
+        // Everything is re-encoded as JPEG, so previews, the data-URL split
+        // and the Gemini mime type are format-independent from here on.
+        const { b64, dataUrl } = await convertToJpeg(file);
+        added.push({ b64, mime: 'image/jpeg', dataUrl });
+      } catch (err) {
+        console.error('[log] image conversion failed', {
+          step: 'convertToJpeg',
+          fileName: file.name,
+          fileType: file.type || '(empty)',
+          fileSizeBytes: file.size,
+          error: err,
+        });
+        setError(
+          err instanceof UnsupportedImageError
+            ? 'This photo format isn’t supported — please choose a JPEG or PNG, or screenshot the photo and upload that.'
+            : 'Could not process that image — please try a different photo.'
+        );
+      }
+    }
+    if (added.length > 0) {
+      setImages((prev) => [...prev, ...added].slice(0, MAX_PHOTOS));
+    }
+  };
 
   const apiHeaders = async (): Promise<Record<string, string>> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -198,8 +219,7 @@ export default function LogPage() {
       const body =
         tab === 'photo'
           ? {
-              imageB64: image?.b64,
-              mimeType: image?.mime,
+              images: images.map((i) => ({ b64: i.b64, mimeType: i.mime })),
               // Optional user-typed details refine/override what's visible.
               text: photoContext.trim() || undefined,
             }
@@ -212,52 +232,17 @@ export default function LogPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed. Please try again.');
       setResult(data as AnalyseFoodResponse);
-      setCorrection('');
     } catch (err) {
       console.error('[log] analyse failed', {
         step: 'analyse-food request',
         mode: tab,
-        imageMime: image?.mime ?? null,
-        imageB64Length: image?.b64.length ?? 0,
+        imageCount: images.length,
         textLength: text.trim().length,
         error: err,
       });
       setError(err instanceof Error ? err.message : 'Analysis failed. Please try again.');
     } finally {
       setAnalysing(false);
-    }
-  };
-
-  const submitCorrection = async () => {
-    if (!result || !correction.trim()) return;
-    setCorrecting(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/analyse-food', {
-        method: 'POST',
-        headers: await apiHeaders(),
-        body: JSON.stringify({
-          imageB64: tab === 'photo' ? image?.b64 : undefined,
-          mimeType: tab === 'photo' ? image?.mime : undefined,
-          text: (tab === 'photo' ? photoContext : text).trim() || undefined,
-          previousAnalysis: result,
-          correction: correction.trim(),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Could not update the analysis. Please try again.');
-      setResult(data as AnalyseFoodResponse);
-      setCorrection('');
-    } catch (err) {
-      console.error('[log] correction failed', {
-        step: 'correction request',
-        mode: tab,
-        correctionLength: correction.trim().length,
-        error: err,
-      });
-      setError(err instanceof Error ? err.message : 'Could not update the analysis. Please try again.');
-    } finally {
-      setCorrecting(false);
     }
   };
 
@@ -273,6 +258,7 @@ export default function LogPage() {
         confidence: result.confidence,
         warningMessage: result.warningMessage,
         notes: notes.trim() || undefined,
+        photos: tab === 'photo' && images.length > 0 ? images.map((i) => i.dataUrl) : undefined,
         createdAt: new Date().toISOString(),
         synced: 0,
       });
@@ -286,7 +272,7 @@ export default function LogPage() {
     }
   };
 
-  const canAnalyse = tab === 'photo' ? !!image : text.trim().length > 2;
+  const canAnalyse = tab === 'photo' ? images.length > 0 : text.trim().length > 2;
 
   // -------------------------------------------------------------------------
   // Review screen
@@ -316,23 +302,14 @@ export default function LogPage() {
               {result.confidence} confidence
             </span>
           </div>
-          {result.foodItems.map((item, i) => (
-            <div
-              key={`${item.name}-${i}`}
-              className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-slate-800">{item.name}</p>
-                <p className="text-xs text-slate-400">{item.quantity}</p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <span className="text-sm font-semibold tabular-nums text-slate-700">
-                  {fmt(item.nutrition.calories)} kcal
-                </span>
-                <span className={CONFIDENCE_PILL[item.confidence]}>{item.confidence}</span>
-              </div>
-            </div>
-          ))}
+          <CorrectionEditor
+            analysis={result}
+            images={
+              tab === 'photo' ? images.map((i) => ({ b64: i.b64, mimeType: i.mime })) : undefined
+            }
+            contextText={tab === 'photo' ? photoContext : text}
+            onRevised={setResult}
+          />
         </section>
 
         <section className="card">
@@ -360,38 +337,6 @@ export default function LogPage() {
               </div>
             ))}
           </div>
-        </section>
-
-        <section className="card space-y-3">
-          <div>
-            <h2 className="font-semibold text-slate-900">Did we miss something?</h2>
-            <p className="text-xs text-slate-400">
-              Tell the AI what&apos;s wrong or missing and it will revise the whole analysis. You can
-              do this as many times as you like — nothing is saved until you tap Save.
-            </p>
-          </div>
-          <textarea
-            className="input min-h-[64px] resize-y"
-            value={correction}
-            onChange={(e) => setCorrection(e.target.value)}
-            placeholder="e.g. there were also fries, and the drink was diet coke"
-          />
-          <button
-            type="button"
-            className="btn-secondary w-full"
-            onClick={submitCorrection}
-            disabled={!correction.trim() || correcting}
-          >
-            {correcting ? (
-              <>
-                <Loader2 size={16} className="animate-spin" /> Updating analysis…
-              </>
-            ) : (
-              <>
-                <Sparkles size={16} /> Update analysis
-              </>
-            )}
-          </button>
         </section>
 
         <section className="card space-y-4">
@@ -464,23 +409,58 @@ export default function LogPage() {
 
       {tab === 'photo' ? (
         <div className="card">
-          {image ? (
+          {images.length > 0 ? (
             <div className="space-y-4">
-              <div className="relative">
-                <img
-                  src={image.dataUrl}
-                  alt="Meal preview"
-                  className="max-h-80 w-full rounded-xl object-cover"
-                />
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                {images.map((img, i) => (
+                  <div key={`${i}-${img.dataUrl.length}`} className="relative aspect-square">
+                    <img
+                      src={img.dataUrl}
+                      alt={`Meal photo ${i + 1}`}
+                      className="h-full w-full rounded-xl object-cover"
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Remove photo ${i + 1}`}
+                      onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                      className="absolute right-1 top-1 rounded-full bg-slate-900/70 p-1 text-white hover:bg-slate-900"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+                {images.length < MAX_PHOTOS && (
+                  <button
+                    type="button"
+                    aria-label="Add more photos"
+                    onClick={() => galleryInputRef.current?.click()}
+                    className="flex aspect-square items-center justify-center rounded-xl border-2 border-dashed border-slate-200 text-slate-400 transition-colors hover:border-primary-300 hover:text-primary-500"
+                  >
+                    <Plus size={22} />
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
                 <button
                   type="button"
-                  aria-label="Remove image"
-                  onClick={() => setImage(null)}
-                  className="absolute right-2 top-2 rounded-full bg-slate-900/70 p-1.5 text-white hover:bg-slate-900"
+                  className="btn-secondary flex-1"
+                  onClick={() => cameraInputRef.current?.click()}
+                  disabled={images.length >= MAX_PHOTOS}
                 >
-                  <X size={16} />
+                  <Camera size={16} /> Take Photo
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary flex-1"
+                  onClick={() => galleryInputRef.current?.click()}
+                  disabled={images.length >= MAX_PHOTOS}
+                >
+                  <Upload size={16} /> Add from Gallery
                 </button>
               </div>
+              <p className="text-center text-xs text-slate-400">
+                {images.length}/{MAX_PHOTOS} photos — main dish, sides, drinks or extra angles all help.
+              </p>
               <div>
                 <label className="label" htmlFor="photo-context">
                   Add details <span className="font-normal text-slate-400">(optional)</span>
@@ -507,8 +487,7 @@ export default function LogPage() {
               onDrop={(e) => {
                 e.preventDefault();
                 setDragging(false);
-                const file = e.dataTransfer.files[0];
-                if (file) handleFile(file);
+                handleFiles(Array.from(e.dataTransfer.files));
               }}
               className={cn(
                 'flex w-full flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed px-4 py-10 transition-colors',
@@ -519,7 +498,7 @@ export default function LogPage() {
             >
               <Upload size={28} className="text-slate-400" />
               <span className="text-sm font-medium text-slate-600">
-                Drag & drop a photo here, or
+                Drag & drop up to {MAX_PHOTOS} photos here, or
               </span>
               <div className="flex w-full max-w-sm flex-col gap-2 sm:flex-row">
                 <button
@@ -537,7 +516,9 @@ export default function LogPage() {
                   <Upload size={16} /> Upload Photo
                 </button>
               </div>
-              <span className="text-xs text-slate-400">JPG, PNG, WebP or HEIC · max 10 MB</span>
+              <span className="text-xs text-slate-400">
+                JPG, PNG, WebP or HEIC · max 10 MB each · up to {MAX_PHOTOS} photos
+              </span>
             </div>
           )}
           {/* Camera capture (mobile opens the camera; desktop falls back to a file picker) */}
@@ -548,20 +529,19 @@ export default function LogPage() {
             capture="environment"
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleFile(file);
+              handleFiles(Array.from(e.target.files ?? []));
               e.target.value = '';
             }}
           />
-          {/* Gallery / file picker (no capture attribute) */}
+          {/* Gallery / file picker (no capture attribute, multiple selection) */}
           <input
             ref={galleryInputRef}
             type="file"
+            multiple
             accept={ACCEPTED_IMAGE_TYPES.join(',')}
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleFile(file);
+              handleFiles(Array.from(e.target.files ?? []));
               e.target.value = '';
             }}
           />

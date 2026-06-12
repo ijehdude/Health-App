@@ -14,6 +14,7 @@ import {
   YAxis,
 } from 'recharts';
 import { Loader2, Sparkles, Trash2 } from 'lucide-react';
+import MealDetail from '@/components/MealDetail';
 import { useProfile } from '@/hooks/useProfile';
 import {
   deleteFoodLog,
@@ -52,6 +53,7 @@ export default function HistoryPage() {
   const [insight, setInsight] = useState<InsightResponse | null>(null);
   const [insightLoading, setInsightLoading] = useState(false);
   const [insightError, setInsightError] = useState<string | null>(null);
+  const [selectedLog, setSelectedLog] = useState<FoodLog | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -316,35 +318,46 @@ export default function HistoryPage() {
             ) : (
               <ul className="max-h-96 space-y-2 overflow-y-auto pr-1">
                 {logs.map((log) => (
-                  <li
-                    key={log.id}
-                    className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
-                        {log.mealType} ·{' '}
-                        {new Date(log.date + 'T12:00:00').toLocaleDateString(undefined, {
-                          day: 'numeric',
-                          month: 'short',
-                        })}
-                      </p>
-                      <p className="truncate text-sm font-medium text-slate-800">
-                        {log.items.map((i) => i.name).join(', ')}
-                      </p>
-                      {log.notes && <p className="truncate text-xs text-slate-400">{log.notes}</p>}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className="text-sm font-semibold tabular-nums text-slate-700">
-                        {fmt(log.totalNutrition.calories)} kcal
-                      </span>
-                      <button
-                        type="button"
-                        aria-label="Delete log"
-                        onClick={() => removeLog(log.id)}
-                        className="rounded-lg p-1.5 text-slate-300 hover:bg-danger-50 hover:text-danger-600"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                  <li key={log.id}>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedLog(log)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') setSelectedLog(log);
+                      }}
+                      className="flex cursor-pointer items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3 transition-colors hover:bg-slate-100"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
+                          {log.mealType} ·{' '}
+                          {new Date(log.date + 'T12:00:00').toLocaleDateString(undefined, {
+                            day: 'numeric',
+                            month: 'short',
+                          })}
+                          {(log.photos?.length ?? 0) > 0 && ` · 📷 ${log.photos!.length}`}
+                        </p>
+                        <p className="truncate text-sm font-medium text-slate-800">
+                          {log.items.map((i) => i.name).join(', ')}
+                        </p>
+                        {log.notes && <p className="truncate text-xs text-slate-400">{log.notes}</p>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="text-sm font-semibold tabular-nums text-slate-700">
+                          {fmt(log.totalNutrition.calories)} kcal
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="Delete log"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeLog(log.id);
+                          }}
+                          className="rounded-lg p-1.5 text-slate-300 hover:bg-danger-50 hover:text-danger-600"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </div>
                   </li>
                 ))}
@@ -352,6 +365,14 @@ export default function HistoryPage() {
             )}
           </section>
         </>
+      )}
+
+      {selectedLog && (
+        <MealDetail
+          log={selectedLog}
+          onClose={() => setSelectedLog(null)}
+          onChanged={load}
+        />
       )}
     </div>
   );

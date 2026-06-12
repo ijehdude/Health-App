@@ -16,7 +16,13 @@ import {
 } from '@/components/ProfileFields';
 import { useProfile } from '@/hooks/useProfile';
 import { deleteAllData, exportAllData, saveProfile } from '@/lib/db';
-import { backgroundSync, fullSync, getSupabase, isSupabaseConfigured } from '@/lib/supabase';
+import {
+  backgroundSync,
+  fullSync,
+  getLastSyncedAt,
+  getSupabase,
+  isSupabaseConfigured,
+} from '@/lib/supabase';
 import { dateStr, fmt } from '@/lib/utils';
 
 export default function SettingsPage() {
@@ -166,6 +172,11 @@ function CloudSyncCard() {
   const { user } = useAuth();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(null);
+  const [lastSynced, setLastSynced] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLastSynced(getLastSyncedAt());
+  }, []);
 
   if (!configured) {
     return (
@@ -207,6 +218,13 @@ function CloudSyncCard() {
       <p className="text-xs text-slate-400">
         Meals are saved on this device first and synced to your account automatically. Use Sync now
         if you want to force it (e.g. after being offline).
+        {lastSynced &&
+          ` Last synced ${new Date(lastSynced).toLocaleString([], {
+            day: 'numeric',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+          })}.`}
       </p>
       <div className="flex gap-2">
         <button
@@ -215,8 +233,23 @@ function CloudSyncCard() {
           disabled={busy}
           onClick={() =>
             run(async () => {
-              const { pushed, pulled } = await fullSync();
-              return `Sync complete — ${pushed} pushed, ${pulled} pulled.`;
+              const r = await fullSync();
+              setLastSynced(r.at);
+              // Consistency check: local vs cloud meal counts must agree.
+              if (r.cloudMeals !== r.localMeals) {
+                throw new Error(
+                  `Sync finished but counts don't match: ${r.localMeals} meals on this device vs ` +
+                    `${r.cloudMeals} in the cloud. Run Sync now again — if the mismatch persists, ` +
+                    'check your connection.'
+                );
+              }
+              const when = new Date(r.at).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              return r.pushed > 0 || r.pulled > 0
+                ? `Synced — ${r.pushed} uploaded, ${r.pulled} downloaded. ${r.cloudMeals} meals in cloud.`
+                : `Everything up to date — last synced ${when}, ${r.cloudMeals} meals in cloud.`;
             })
           }
         >
