@@ -67,9 +67,17 @@ export interface AIRequest {
 /** Sends a JSON-mode request to the configured provider and parses the reply. */
 export async function aiGenerateJson(req: AIRequest): Promise<unknown> {
   const provider = getProvider();
-  const raw =
-    provider === 'openai' ? await callOpenAI(req) : await callGemini(req);
-  return parseJsonReply(raw);
+  const call = () => (provider === 'openai' ? callOpenAI(req) : callGemini(req));
+  try {
+    return parseJsonReply(await call());
+  } catch (err) {
+    // Models occasionally emit truncated/malformed JSON — one retry fixes most.
+    if (err instanceof Error && err.name === 'InvalidJsonError') {
+      console.error('[ai] Model returned invalid JSON; retrying once.');
+      return parseJsonReply(await call());
+    }
+    throw err;
+  }
 }
 
 async function callGemini(req: AIRequest): Promise<string> {
@@ -214,7 +222,9 @@ function parseJsonReply(raw: string): unknown {
   try {
     return JSON.parse(cleaned);
   } catch {
-    throw new Error('AI response was not valid JSON.');
+    const err = new Error('AI response was not valid JSON.');
+    err.name = 'InvalidJsonError';
+    throw err;
   }
 }
 

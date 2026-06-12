@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { addFoodLog } from '@/lib/db';
+import { backgroundSync, getAccessToken } from '@/lib/supabase';
 import {
   MACRO_KEYS,
   NUTRIENT_META,
@@ -141,10 +142,13 @@ export default function LogPage() {
   const [image, setImage] = useState<{ b64: string; mime: string; dataUrl: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [text, setText] = useState('');
+  const [photoContext, setPhotoContext] = useState('');
   const [notes, setNotes] = useState('');
   const [analysing, setAnalysing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<AnalyseFoodResponse | null>(null);
+  const [correction, setCorrection] = useState('');
+  const [correcting, setCorrecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleFile = useCallback(async (file: File) => {
@@ -180,22 +184,35 @@ export default function LogPage() {
     }
   }, []);
 
+  const apiHeaders = async (): Promise<Record<string, string>> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = await getAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  };
+
   const analyse = async () => {
     setError(null);
     setAnalysing(true);
     try {
       const body =
         tab === 'photo'
-          ? { imageB64: image?.b64, mimeType: image?.mime }
+          ? {
+              imageB64: image?.b64,
+              mimeType: image?.mime,
+              // Optional user-typed details refine/override what's visible.
+              text: photoContext.trim() || undefined,
+            }
           : { text: text.trim() };
       const res = await fetch('/api/analyse-food', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await apiHeaders(),
         body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Analysis failed. Please try again.');
       setResult(data as AnalyseFoodResponse);
+      setCorrection('');
     } catch (err) {
       console.error('[log] analyse failed', {
         step: 'analyse-food request',
@@ -208,6 +225,39 @@ export default function LogPage() {
       setError(err instanceof Error ? err.message : 'Analysis failed. Please try again.');
     } finally {
       setAnalysing(false);
+    }
+  };
+
+  const submitCorrection = async () => {
+    if (!result || !correction.trim()) return;
+    setCorrecting(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/analyse-food', {
+        method: 'POST',
+        headers: await apiHeaders(),
+        body: JSON.stringify({
+          imageB64: tab === 'photo' ? image?.b64 : undefined,
+          mimeType: tab === 'photo' ? image?.mime : undefined,
+          text: (tab === 'photo' ? photoContext : text).trim() || undefined,
+          previousAnalysis: result,
+          correction: correction.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Could not update the analysis. Please try again.');
+      setResult(data as AnalyseFoodResponse);
+      setCorrection('');
+    } catch (err) {
+      console.error('[log] correction failed', {
+        step: 'correction request',
+        mode: tab,
+        correctionLength: correction.trim().length,
+        error: err,
+      });
+      setError(err instanceof Error ? err.message : 'Could not update the analysis. Please try again.');
+    } finally {
+      setCorrecting(false);
     }
   };
 
@@ -226,6 +276,9 @@ export default function LogPage() {
         createdAt: new Date().toISOString(),
         synced: 0,
       });
+      // Saved locally first — cloud push happens in the background, and a
+      // failure just leaves the log queued (synced: 0) for the next sync.
+      backgroundSync();
       router.push('/');
     } catch {
       setError('Could not save this meal. Please try again.');
@@ -309,6 +362,38 @@ export default function LogPage() {
           </div>
         </section>
 
+        <section className="card space-y-3">
+          <div>
+            <h2 className="font-semibold text-slate-900">Did we miss something?</h2>
+            <p className="text-xs text-slate-400">
+              Tell the AI what&apos;s wrong or missing and it will revise the whole analysis. You can
+              do this as many times as you like — nothing is saved until you tap Save.
+            </p>
+          </div>
+          <textarea
+            className="input min-h-[64px] resize-y"
+            value={correction}
+            onChange={(e) => setCorrection(e.target.value)}
+            placeholder="e.g. there were also fries, and the drink was diet coke"
+          />
+          <button
+            type="button"
+            className="btn-secondary w-full"
+            onClick={submitCorrection}
+            disabled={!correction.trim() || correcting}
+          >
+            {correcting ? (
+              <>
+                <Loader2 size={16} className="animate-spin" /> Updating analysis…
+              </>
+            ) : (
+              <>
+                <Sparkles size={16} /> Update analysis
+              </>
+            )}
+          </button>
+        </section>
+
         <section className="card space-y-4">
           <div>
             <label className="label">Meal type</label>
@@ -380,20 +465,37 @@ export default function LogPage() {
       {tab === 'photo' ? (
         <div className="card">
           {image ? (
-            <div className="relative">
-              <img
-                src={image.dataUrl}
-                alt="Meal preview"
-                className="max-h-80 w-full rounded-xl object-cover"
-              />
-              <button
-                type="button"
-                aria-label="Remove image"
-                onClick={() => setImage(null)}
-                className="absolute right-2 top-2 rounded-full bg-slate-900/70 p-1.5 text-white hover:bg-slate-900"
-              >
-                <X size={16} />
-              </button>
+            <div className="space-y-4">
+              <div className="relative">
+                <img
+                  src={image.dataUrl}
+                  alt="Meal preview"
+                  className="max-h-80 w-full rounded-xl object-cover"
+                />
+                <button
+                  type="button"
+                  aria-label="Remove image"
+                  onClick={() => setImage(null)}
+                  className="absolute right-2 top-2 rounded-full bg-slate-900/70 p-1.5 text-white hover:bg-slate-900"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div>
+                <label className="label" htmlFor="photo-context">
+                  Add details <span className="font-normal text-slate-400">(optional)</span>
+                </label>
+                <textarea
+                  id="photo-context"
+                  className="input min-h-[64px] resize-y"
+                  value={photoContext}
+                  onChange={(e) => setPhotoContext(e.target.value)}
+                  placeholder="e.g. the rice is brown rice, sauce on the side, small portion"
+                />
+                <p className="mt-1 text-xs text-slate-400">
+                  The AI trusts your details over what it sees in the photo.
+                </p>
+              </div>
             </div>
           ) : (
             <div

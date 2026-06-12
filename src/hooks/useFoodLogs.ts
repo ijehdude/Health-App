@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getFoodLogsByDate, getLogStreak } from '@/lib/db';
+import { onSynced } from '@/lib/supabase';
 import { addNutrition, emptyNutrition, type FoodLog, type Nutrition } from '@/lib/types';
 import { dateStr } from '@/lib/utils';
 
@@ -25,6 +26,7 @@ export function useFoodLogs() {
 
   useEffect(() => {
     refresh();
+    return onSynced(refresh); // re-read after a cloud pull merges new data
   }, [refresh]);
 
   return { logs, total, streak, loading, refresh };

@@ -8,6 +8,7 @@ import {
   addNutrition,
 } from './types';
 import { dateStr, addDays } from './utils';
+import { queueCloudDelete } from './syncQueue';
 
 class NutriCoachDB extends Dexie {
   profiles!: Table<UserProfile, number>;
@@ -67,7 +68,10 @@ export async function getFoodLogsByDateRange(start: string, end: string): Promis
 export async function deleteFoodLog(id: number): Promise<void> {
   const log = await db.foodLogs.get(id);
   await db.foodLogs.delete(id);
-  if (log) await recomputeDailySummary(log.date);
+  if (log) {
+    queueCloudDelete(log.createdAt);
+    await recomputeDailySummary(log.date);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +98,7 @@ export async function getSummariesByDateRange(
   return db.dailySummaries.where('date').between(start, end, true, true).sortBy('date');
 }
 
-async function recomputeDailySummary(date: string): Promise<void> {
+export async function recomputeDailySummary(date: string): Promise<void> {
   const logs = await getFoodLogsByDate(date);
   const profile = await getProfile();
   const total = logs.reduce((acc, l) => addNutrition(acc, l.totalNutrition), emptyNutrition());

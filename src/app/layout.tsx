@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import AuthGate from '@/components/AuthGate';
 import Navigation from '@/components/Navigation';
 import './globals.css';
 
@@ -20,10 +21,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <Navigation />
-        <main className="min-h-screen pb-24 md:pb-8 md:pl-16">
-          <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">{children}</div>
-        </main>
+        <AuthGate>
+          <Navigation />
+          <main className="min-h-screen pb-24 md:pb-8 md:pl-16">
+            <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">{children}</div>
+          </main>
+        </AuthGate>
       </body>
     </html>
   );

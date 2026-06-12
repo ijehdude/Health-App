@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getProfile } from '@/lib/db';
+import { onSynced } from '@/lib/supabase';
 import type { UserProfile } from '@/lib/types';
 
 /** Loads the user profile from Dexie (client-side only). */
@@ -20,6 +21,7 @@ export function useProfile() {
 
   useEffect(() => {
     refresh();
+    return onSynced(refresh); // re-read after a cloud pull merges new data
   }, [refresh]);
 
   return { profile, loading, refresh };

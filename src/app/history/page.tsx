@@ -20,6 +20,7 @@ import {
   getFoodLogsByDateRange,
   getSummariesByDateRange,
 } from '@/lib/db';
+import { backgroundSync, getAccessToken, onSynced } from '@/lib/supabase';
 import type { DailySummary, FoodLog, InsightResponse } from '@/lib/types';
 import { addDays, cn, dateStr, fmt } from '@/lib/utils';
 
@@ -68,6 +69,7 @@ export default function HistoryPage() {
     setInsight(null);
     setInsightError(null);
     load();
+    return onSynced(load); // re-read after a cloud pull merges new data
   }, [load]);
 
   const target = profile?.targets.calorieTarget ?? 0;
@@ -115,9 +117,12 @@ export default function HistoryPage() {
     setInsightLoading(true);
     setInsightError(null);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = await getAccessToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch('/api/generate-insight', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           summaries: trackedDays.map((s) => ({
             date: s.date,
@@ -139,7 +144,8 @@ export default function HistoryPage() {
 
   const removeLog = async (id?: number) => {
     if (id == null) return;
-    await deleteFoodLog(id);
+    await deleteFoodLog(id); // queues the cloud delete if the request can't be sent now
+    backgroundSync();
     load();
   };
 

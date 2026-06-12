@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Check, Cloud, Download, Loader2, LogOut, Trash2 } from 'lucide-react';
-import type { Session } from '@supabase/supabase-js';
+import { useAuth } from '@/components/AuthGate';
 import {
   BasicsFields,
   EMPTY_FORM,
@@ -16,7 +16,7 @@ import {
 } from '@/components/ProfileFields';
 import { useProfile } from '@/hooks/useProfile';
 import { deleteAllData, exportAllData, saveProfile } from '@/lib/db';
-import { getSupabase, isSupabaseConfigured, syncToCloud } from '@/lib/supabase';
+import { backgroundSync, fullSync, getSupabase, isSupabaseConfigured } from '@/lib/supabase';
 import { dateStr, fmt } from '@/lib/utils';
 
 export default function SettingsPage() {
@@ -46,6 +46,7 @@ export default function SettingsPage() {
     try {
       await saveProfile(profileFromForm(form, profile?.id));
       await refresh();
+      backgroundSync();
       setSaved(true);
     } catch {
       setError('Could not save changes. Please try again.');
@@ -162,29 +163,20 @@ export default function SettingsPage() {
 
 function CloudSyncCard() {
   const configured = isSupabaseConfigured();
-  const [session, setSession] = useState<Session | null>(null);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const { user } = useAuth();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(null);
-
-  useEffect(() => {
-    const supabase = getSupabase();
-    if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
-  }, []);
 
   if (!configured) {
     return (
       <section className="card">
         <h2 className="flex items-center gap-2 font-semibold text-slate-900">
-          <Cloud size={18} /> Cloud sync
+          <Cloud size={18} /> Account & cloud sync
         </h2>
         <p className="mt-2 text-sm text-slate-400">
-          Optional. Add Supabase credentials to <code className="rounded bg-slate-100 px-1">.env.local</code>{' '}
-          (see SETUP.md) to back up your data and sync across devices.
+          Not configured. Add Supabase credentials to{' '}
+          <code className="rounded bg-slate-100 px-1">.env.local</code> (see SETUP.md) to enable
+          accounts and cross-device sync.
         </p>
       </section>
     );
@@ -207,110 +199,43 @@ function CloudSyncCard() {
   return (
     <section className="card space-y-3">
       <h2 className="flex items-center gap-2 font-semibold text-slate-900">
-        <Cloud size={18} /> Cloud sync
+        <Cloud size={18} /> Account & cloud sync
       </h2>
-
-      {session ? (
-        <>
-          <p className="text-sm text-slate-500">
-            Signed in as <strong>{session.user.email}</strong>
-          </p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="btn-primary flex-1"
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  const { logs } = await syncToCloud();
-                  return `Synced ${logs} food logs to the cloud.`;
-                })
-              }
-            >
-              {busy ? <Loader2 size={16} className="animate-spin" /> : <Cloud size={16} />} Sync now
-            </button>
-            <button
-              type="button"
-              className="btn-secondary"
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  await supabase.auth.signOut();
-                  return 'Signed out.';
-                })
-              }
-            >
-              <LogOut size={16} /> Sign out
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <input
-            className="input"
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-          />
-          <input
-            className="input"
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="btn-primary flex-1"
-              disabled={busy || !email || !password}
-              onClick={() =>
-                run(async () => {
-                  const { error } = await supabase.auth.signInWithPassword({ email, password });
-                  if (error) throw new Error(error.message);
-                  return 'Signed in.';
-                })
-              }
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              className="btn-secondary flex-1"
-              disabled={busy || !email || !password}
-              onClick={() =>
-                run(async () => {
-                  const { error } = await supabase.auth.signUp({ email, password });
-                  if (error) throw new Error(error.message);
-                  return 'Account created — check your email to confirm.';
-                })
-              }
-            >
-              Sign up
-            </button>
-          </div>
-          <button
-            type="button"
-            className="btn-secondary w-full"
-            disabled={busy}
-            onClick={() =>
-              run(async () => {
-                const { error } = await supabase.auth.signInWithOAuth({
-                  provider: 'google',
-                  options: { redirectTo: `${window.location.origin}/settings` },
-                });
-                if (error) throw new Error(error.message);
-                return 'Redirecting to Google…';
-              })
-            }
-          >
-            Continue with Google
-          </button>
-        </>
-      )}
+      <p className="text-sm text-slate-500">
+        Signed in as <strong>{user?.email}</strong>
+      </p>
+      <p className="text-xs text-slate-400">
+        Meals are saved on this device first and synced to your account automatically. Use Sync now
+        if you want to force it (e.g. after being offline).
+      </p>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className="btn-primary flex-1"
+          disabled={busy}
+          onClick={() =>
+            run(async () => {
+              const { pushed, pulled } = await fullSync();
+              return `Sync complete — ${pushed} pushed, ${pulled} pulled.`;
+            })
+          }
+        >
+          {busy ? <Loader2 size={16} className="animate-spin" /> : <Cloud size={16} />} Sync now
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={busy}
+          onClick={() =>
+            run(async () => {
+              await supabase.auth.signOut();
+              return 'Signed out.';
+            })
+          }
+        >
+          <LogOut size={16} /> Sign out
+        </button>
+      </div>
 
       {message && (
         <p
