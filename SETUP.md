@@ -62,7 +62,9 @@ friendly "AI is busy" message. To pin different models, set
 1. Create a project at https://supabase.com.
 2. Open **SQL Editor → New query**, paste the contents of `supabase_schema.sql`
    and run it. This creates the mirrored tables with Row Level Security and
-   `updated_at` triggers.
+   `updated_at` triggers, plus the private `meal-photos` storage bucket where
+   meal photos are kept (database rows only store their paths). If you ran an
+   older version of the schema, just re-run the file — it is idempotent.
 3. **Authentication → Providers**: email/password is on by default. To enable
    Google sign-in, add your Google OAuth client ID/secret (from Google Cloud
    Console) and register the redirect URI Supabase shows you.

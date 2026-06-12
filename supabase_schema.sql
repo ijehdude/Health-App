@@ -116,6 +116,25 @@ create trigger weekly_insights_updated_at
   for each row execute function public.set_updated_at();
 
 -- ---------------------------------------------------------------------------
+-- Meal photo storage (private bucket, one folder per user)
+-- ---------------------------------------------------------------------------
+insert into storage.buckets (id, name, public)
+values ('meal-photos', 'meal-photos', false)
+on conflict (id) do nothing;
+
+drop policy if exists "Users manage own meal photos" on storage.objects;
+create policy "Users manage own meal photos"
+  on storage.objects for all
+  using (
+    bucket_id = 'meal-photos'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  )
+  with check (
+    bucket_id = 'meal-photos'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+-- ---------------------------------------------------------------------------
 -- Auth providers
 -- ---------------------------------------------------------------------------
 -- Email/password is enabled by default in Supabase.

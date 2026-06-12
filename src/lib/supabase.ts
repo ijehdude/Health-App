@@ -66,6 +66,16 @@ export async function fullSync(): Promise<SyncResult> {
   const userId = auth.user?.id;
   if (!userId) throw new Error('Sign in before syncing.');
 
+  // One-time: re-push meals whose cloud rows still embed photos, so they get
+  // rewritten with storage paths and the database rows shrink.
+  if (typeof window !== 'undefined') {
+    const flagKey = `nutricoach:photos-to-storage:${userId}`;
+    if (!localStorage.getItem(flagKey)) {
+      await db.foodLogs.filter((l) => (l.photos?.length ?? 0) > 0).modify({ synced: 0 });
+      localStorage.setItem(flagKey, '1');
+    }
+  }
+
   await processPendingDeletes(supabase, userId);
   const pulled = await pullFromCloud(supabase, userId);
   const pushed = await pushToCloud(supabase, userId);
@@ -117,6 +127,70 @@ export async function runFirstLoginMigration(userId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Photo storage — photos live in the meal-photos bucket (one folder per user),
+// not in the database row, keeping rows small and sync pulls cheap.
+// ---------------------------------------------------------------------------
+
+const PHOTO_BUCKET = 'meal-photos';
+const MAX_PHOTOS_PER_MEAL = 5;
+
+function photoPath(userId: string, createdAt: string, index: number): string {
+  return `${userId}/${createdAt.replace(/[:.]/g, '-')}-${index}.jpg`;
+}
+
+async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  return (await fetch(dataUrl)).blob();
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('Could not read downloaded photo.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function uploadPhotos(
+  supabase: SupabaseClient,
+  userId: string,
+  log: FoodLog
+): Promise<string[]> {
+  const paths: string[] = [];
+  for (let i = 0; i < (log.photos?.length ?? 0); i++) {
+    const path = photoPath(userId, log.createdAt, i);
+    const blob = await dataUrlToBlob(log.photos![i]);
+    const { error } = await supabase.storage
+      .from(PHOTO_BUCKET)
+      .upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+    if (error) {
+      throw new Error(
+        `Photo upload failed — is the "${PHOTO_BUCKET}" storage bucket set up (see SETUP.md)? ${error.message}`
+      );
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+/** Best-effort: missing photos shouldn't block pulling the meal itself. */
+async function downloadPhotos(
+  supabase: SupabaseClient,
+  paths: string[]
+): Promise<string[] | undefined> {
+  const out: string[] = [];
+  for (const path of paths) {
+    const { data, error } = await supabase.storage.from(PHOTO_BUCKET).download(path);
+    if (error || !data) {
+      console.warn('[sync] Could not download meal photo', path, error?.message);
+      break;
+    }
+    out.push(await blobToDataUrl(data));
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+// ---------------------------------------------------------------------------
 
 async function processPendingDeletes(supabase: SupabaseClient, userId: string): Promise<void> {
   const queue = readDeleteQueue();
@@ -127,6 +201,14 @@ async function processPendingDeletes(supabase: SupabaseClient, userId: string): 
     .eq('user_id', userId)
     .in('created_at', queue);
   if (error) throw new Error(`Could not delete cloud logs: ${error.message}`);
+
+  // Best-effort cleanup of any photos those meals had in storage.
+  const photoPaths = queue.flatMap((createdAt) =>
+    Array.from({ length: MAX_PHOTOS_PER_MEAL }, (_, i) => photoPath(userId, createdAt, i))
+  );
+  const { error: storageErr } = await supabase.storage.from(PHOTO_BUCKET).remove(photoPaths);
+  if (storageErr) console.warn('[sync] Photo cleanup skipped:', storageErr.message);
+
   clearDeleteQueue();
 }
 
@@ -144,12 +226,16 @@ async function pullFromCloud(supabase: SupabaseClient, userId: string): Promise<
   const touchedDates = new Set<string>();
 
   for (const row of rows ?? []) {
-    const log = row.data as FoodLog | null;
+    const log = row.data as (FoodLog & { photoPaths?: string[] }) | null;
     if (!log?.createdAt || existing.has(log.createdAt) || pendingDeletes.has(log.createdAt)) {
       continue;
     }
-    const { id: _id, ...rest } = log;
-    await db.foodLogs.add({ ...rest, synced: 1 });
+    const { id: _id, photoPaths, photos: embedded, ...rest } = log;
+    // Legacy rows embedded photos directly; new rows reference storage paths.
+    const photos =
+      embedded ??
+      ((photoPaths?.length ?? 0) > 0 ? await downloadPhotos(supabase, photoPaths!) : undefined);
+    await db.foodLogs.add({ ...rest, ...(photos ? { photos } : {}), synced: 1 });
     touchedDates.add(log.date);
     changed++;
   }
@@ -186,16 +272,23 @@ async function pushToCloud(supabase: SupabaseClient, userId: string): Promise<nu
 
   const pending = await db.foodLogs.where('synced').equals(0).toArray();
   if (pending.length > 0) {
-    const { error } = await supabase.from('food_logs').upsert(
-      pending.map((l) => ({
+    const rows = [];
+    for (const l of pending) {
+      // Photos go to the storage bucket; the row only carries their paths.
+      const photoPaths =
+        (l.photos?.length ?? 0) > 0 ? await uploadPhotos(supabase, userId, l) : undefined;
+      const { photos: _photos, id: _id, ...rest } = l;
+      rows.push({
         user_id: userId,
         date: l.date,
         meal_type: l.mealType,
         created_at: l.createdAt,
-        data: { ...l, id: undefined, synced: 1 },
-      })),
-      { onConflict: 'user_id,created_at' }
-    );
+        data: { ...rest, synced: 1, ...(photoPaths ? { photoPaths } : {}) },
+      });
+    }
+    const { error } = await supabase
+      .from('food_logs')
+      .upsert(rows, { onConflict: 'user_id,created_at' });
     if (error) throw new Error(`Food log sync failed: ${error.message}`);
     await Promise.all(pending.map((l) => db.foodLogs.update(l.id!, { synced: 1 })));
   }
