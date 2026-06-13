@@ -9,7 +9,7 @@ const LINKS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/log', label: 'Log Food', icon: Camera },
   { href: '/history', label: 'History', icon: BarChart3 },
-  { href: '/workout', label: 'Workout', icon: Dumbbell },
+  { href: '/workout', label: 'Fitness', icon: Dumbbell },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -23,10 +23,10 @@ export default function Navigation() {
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-16 flex-col items-center border-r border-slate-200 bg-white py-4 md:flex">
         <Link
           href="/"
-          aria-label="NutriCoach home"
+          aria-label="Health Coach home"
           className="mb-6 flex h-10 w-10 items-center justify-center rounded-xl bg-primary-600 text-lg font-black text-white"
         >
-          N
+          H
         </Link>
         <nav className="flex flex-col gap-2">
           {LINKS.map(({ href, label, icon: Icon }) => {

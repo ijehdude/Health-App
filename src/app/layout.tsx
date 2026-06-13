@@ -4,9 +4,9 @@ import Navigation from '@/components/Navigation';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: { default: 'NutriCoach — AI Nutrition & Fitness Coach', template: '%s · NutriCoach' },
+  title: { default: 'Health Coach — AI Nutrition & Fitness', template: '%s · Health Coach' },
   description:
-    'Log meals with a photo or text, get a full AI nutrient breakdown against your personal targets, and receive food and workout recommendations.',
+    'Your AI nutrition and fitness coach: log meals and workouts, track nutrients and training, get an eat-back calorie target, and follow a personalised race plan.',
   manifest: '/manifest.json',
   icons: { icon: '/icon.svg' },
 };

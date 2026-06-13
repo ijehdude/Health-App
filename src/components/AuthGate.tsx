@@ -139,10 +139,10 @@ function AuthScreen() {
       <div className="w-full max-w-sm animate-slide-up">
         <div className="mb-6 text-center">
           <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-600 text-2xl font-black text-white">
-            N
+            H
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">NutriCoach</h1>
-          <p className="text-sm text-slate-400">Your meals, synced to your account.</p>
+          <h1 className="text-2xl font-bold text-slate-900">Health Coach</h1>
+          <p className="text-sm text-slate-400">Nutrition &amp; fitness, synced to your account.</p>
         </div>
 
         <form className="card space-y-4" onSubmit={submit}>

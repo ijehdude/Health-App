@@ -3,11 +3,12 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo } from 'react';
-import { Camera, Dumbbell, Flame, Loader2 } from 'lucide-react';
+import { Camera, Dumbbell, Flame, Info, Loader2 } from 'lucide-react';
 import { CalorieRing, MacroRing } from '@/components/Rings';
+import { useExercise } from '@/hooks/useExercise';
 import { useFoodLogs } from '@/hooks/useFoodLogs';
 import { useProfile } from '@/hooks/useProfile';
-import { analyzeGaps, recommendFoods } from '@/lib/nutrition';
+import { analyzeGaps, calcAdjustedTarget, recommendFoods } from '@/lib/nutrition';
 import { MICRO_KEYS, type NutrientGap } from '@/lib/types';
 import { cn, fmt } from '@/lib/utils';
 
@@ -27,6 +28,20 @@ export default function DashboardPage() {
   const router = useRouter();
   const { profile, loading: profileLoading } = useProfile();
   const { total, streak, loading: logsLoading } = useFoodLogs();
+  const { caloriesBurned } = useExercise();
+
+  const adjusted = useMemo(
+    () =>
+      profile
+        ? calcAdjustedTarget(
+            profile.sex,
+            profile.targets.bmr,
+            profile.targets.calorieTarget,
+            caloriesBurned
+          )
+        : null,
+    [profile, caloriesBurned]
+  );
 
   const gaps = useMemo(
     () => (profile ? analyzeGaps(total, profile.targets.nutrients) : []),
@@ -82,7 +97,34 @@ export default function DashboardPage() {
 
       {/* Calorie + macro rings */}
       <section className="card flex flex-col items-center gap-6">
-        <CalorieRing consumed={total.calories} target={t.calories} />
+        <CalorieRing consumed={total.calories} target={adjusted?.adjusted ?? t.calories} />
+
+        {/* Exercise eat-back: transparent base + exercise = adjusted (Feature 2) */}
+        {adjusted && (adjusted.exercise > 0 || adjusted.capped) && (
+          <div className="w-full space-y-2">
+            {adjusted.exercise > 0 && (
+              <div className="flex items-center justify-center gap-1.5 text-sm">
+                <span className="text-slate-500">Base {fmt(adjusted.base < adjusted.floor ? adjusted.floor : adjusted.base)}</span>
+                <span className="text-slate-300">+</span>
+                <span className="font-medium text-success-600">exercise {fmt(adjusted.exercise)}</span>
+                <span className="text-slate-300">=</span>
+                <span className="font-bold text-slate-900">{fmt(adjusted.adjusted)} kcal</span>
+              </div>
+            )}
+            {adjusted.note && (
+              <p className="flex items-start gap-2 rounded-xl bg-warning-50 px-3 py-2 text-xs text-warning-800">
+                <Info size={13} className="mt-0.5 shrink-0" />
+                <span>{adjusted.note}</span>
+              </p>
+            )}
+            {adjusted.exercise > 0 && (
+              <p className="text-center text-xs text-slate-400">
+                Target raised to fuel today&apos;s {fmt(adjusted.exercise)} kcal of activity.
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="grid w-full grid-cols-4 gap-2">
           <MacroRing label="Protein" consumed={total.protein} target={t.protein} unit="g" color="#16a34a" />
           <MacroRing label="Carbs" consumed={total.carbs} target={t.carbs} unit="g" color="#f59e0b" />

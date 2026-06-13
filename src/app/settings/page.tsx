@@ -74,7 +74,7 @@ export default function SettingsPage() {
 
   const wipe = async () => {
     const sure = window.confirm(
-      'Delete ALL NutriCoach data on this device? This cannot be undone. Consider exporting first.'
+      'Delete ALL Health Coach data on this device? This cannot be undone. Consider exporting first.'
     );
     if (!sure) return;
     await deleteAllData();

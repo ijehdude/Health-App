@@ -64,25 +64,40 @@ export interface AIImage {
 export interface AIRequest {
   system: string;
   text: string;
-  /** Zero or more images, sent as parts of one request. */
+  /**
+   * Zero or more inline binary parts (images, or PDFs via mimeType
+   * 'application/pdf'), sent as parts of one request. Gemini accepts both.
+   */
   images?: AIImage[];
   tier: ModelTier;
+  /** When false, the model is asked for free-form prose instead of JSON. */
+  json?: boolean;
+  /** Sampling temperature; defaults to 0.2 (deterministic). */
+  temperature?: number;
+}
+
+async function rawCall(req: AIRequest): Promise<string> {
+  return getProvider() === 'openai' ? callOpenAI(req) : callGemini(req);
 }
 
 /** Sends a JSON-mode request to the configured provider and parses the reply. */
 export async function aiGenerateJson(req: AIRequest): Promise<unknown> {
-  const provider = getProvider();
-  const call = () => (provider === 'openai' ? callOpenAI(req) : callGemini(req));
+  const r = { ...req, json: true };
   try {
-    return parseJsonReply(await call());
+    return parseJsonReply(await rawCall(r));
   } catch (err) {
     // Models occasionally emit truncated/malformed JSON — one retry fixes most.
     if (err instanceof Error && err.name === 'InvalidJsonError') {
       console.error('[ai] Model returned invalid JSON; retrying once.');
-      return parseJsonReply(await call());
+      return parseJsonReply(await rawCall(r));
     }
     throw err;
   }
+}
+
+/** Sends a request and returns the model's free-form text reply (for chat). */
+export async function aiGenerateText(req: AIRequest): Promise<string> {
+  return (await rawCall({ ...req, json: false })).trim();
 }
 
 async function callGemini(req: AIRequest): Promise<string> {
@@ -157,7 +172,10 @@ async function callGeminiModel(req: AIRequest, model: string): Promise<string> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ role: 'user', parts }],
-          generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+          generationConfig: {
+            temperature: req.temperature ?? 0.2,
+            ...(req.json === false ? {} : { responseMimeType: 'application/json' }),
+          },
         }),
         signal: AbortSignal.timeout(PER_CALL_TIMEOUT_MS),
       }
@@ -198,8 +216,8 @@ async function callOpenAI(req: AIRequest): Promise<string> {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model: MODELS.openai[req.tier],
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
+      temperature: req.temperature ?? 0.2,
+      ...(req.json === false ? {} : { response_format: { type: 'json_object' } }),
       messages: [
         { role: 'system', content: req.system },
         { role: 'user', content },

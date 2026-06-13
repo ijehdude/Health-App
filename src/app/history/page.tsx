@@ -13,16 +13,18 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Loader2, Sparkles, Trash2 } from 'lucide-react';
+import { Activity, Loader2, Sparkles, Trash2 } from 'lucide-react';
 import MealDetail from '@/components/MealDetail';
 import { useProfile } from '@/hooks/useProfile';
 import {
+  deleteExerciseSession,
   deleteFoodLog,
+  getExerciseSessionsByDateRange,
   getFoodLogsByDateRange,
   getSummariesByDateRange,
 } from '@/lib/db';
 import { backgroundSync, getAccessToken, onSynced } from '@/lib/supabase';
-import type { DailySummary, FoodLog, InsightResponse } from '@/lib/types';
+import type { DailySummary, ExerciseSession, FoodLog, InsightResponse } from '@/lib/types';
 import { addDays, cn, dateStr, fmt } from '@/lib/utils';
 
 type Period = '7d' | '30d' | 'week';
@@ -49,6 +51,7 @@ export default function HistoryPage() {
   const [period, setPeriod] = useState<Period>('7d');
   const [summaries, setSummaries] = useState<DailySummary[]>([]);
   const [logs, setLogs] = useState<FoodLog[]>([]);
+  const [workouts, setWorkouts] = useState<ExerciseSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [insight, setInsight] = useState<InsightResponse | null>(null);
   const [insightLoading, setInsightLoading] = useState(false);
@@ -58,12 +61,14 @@ export default function HistoryPage() {
   const load = useCallback(async () => {
     setLoading(true);
     const { start, end } = rangeFor(period);
-    const [s, l] = await Promise.all([
+    const [s, l, w] = await Promise.all([
       getSummariesByDateRange(start, end),
       getFoodLogsByDateRange(start, end),
+      getExerciseSessionsByDateRange(start, end),
     ]);
     setSummaries(s);
     setLogs(l.reverse()); // most recent first
+    setWorkouts(w.reverse());
     setLoading(false);
   }, [period]);
 
@@ -147,6 +152,13 @@ export default function HistoryPage() {
   const removeLog = async (id?: number) => {
     if (id == null) return;
     await deleteFoodLog(id); // queues the cloud delete if the request can't be sent now
+    backgroundSync();
+    load();
+  };
+
+  const removeWorkout = async (id?: number) => {
+    if (id == null) return;
+    await deleteExerciseSession(id);
     backgroundSync();
     load();
   };
@@ -358,6 +370,56 @@ export default function HistoryPage() {
                           <Trash2 size={16} />
                         </button>
                       </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Workout log list */}
+          <section className="card">
+            <h2 className="mb-3 flex items-center gap-2 font-semibold text-slate-900">
+              <Activity size={18} className="text-primary-600" /> Workouts
+            </h2>
+            {workouts.length === 0 ? (
+              <p className="py-6 text-center text-sm text-slate-400">
+                No exercise logged in this period.
+              </p>
+            ) : (
+              <ul className="max-h-96 space-y-2 overflow-y-auto pr-1">
+                {workouts.map((w) => (
+                  <li
+                    key={w.id}
+                    className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
+                        {w.modality} ·{' '}
+                        {new Date(w.date + 'T12:00:00').toLocaleDateString(undefined, {
+                          day: 'numeric',
+                          month: 'short',
+                        })}
+                      </p>
+                      <p className="truncate text-sm font-medium text-slate-800">{w.activity}</p>
+                      <p className="truncate text-xs text-slate-400">
+                        {w.durationMinutes} min
+                        {w.distanceKm ? ` · ${fmt(w.distanceKm)} km` : ''}
+                        {w.pace ? ` · ${w.pace}` : ''}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="text-sm font-semibold tabular-nums text-slate-700">
+                        {fmt(w.caloriesBurned)} kcal
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="Delete workout"
+                        onClick={() => removeWorkout(w.id)}
+                        className="rounded-lg p-1.5 text-slate-300 hover:bg-danger-50 hover:text-danger-600"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
                   </li>
                 ))}

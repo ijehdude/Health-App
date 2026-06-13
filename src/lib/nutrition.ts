@@ -1,5 +1,6 @@
 import {
   type ActivityLevel,
+  type AdjustedCalorieTarget,
   type AgeGroup,
   type DailyTargets,
   type DietaryRestriction,
@@ -183,6 +184,61 @@ export function calcTargets(input: TargetInput): DailyTargets {
   };
 
   return { bmr, tdee, calorieTarget, nutrients };
+}
+
+// ---------------------------------------------------------------------------
+// Exercise eat-back (Feature 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard safety floors for daily intake (kcal). The adjusted target is never
+ * allowed below these, nor below the user's BMR — eating under BMR for any
+ * sustained period is not safe to recommend.
+ */
+export const CALORIE_FLOORS: Record<Sex, number> = {
+  female: 1200,
+  male: 1500,
+  other: 1350,
+};
+
+/** Safe minimum daily intake for a profile: the greater of the sex floor and BMR. */
+export function safeCalorieFloor(sex: Sex, bmr: number): number {
+  return Math.max(CALORIE_FLOORS[sex], Math.round(bmr));
+}
+
+/**
+ * Computes a transparent, guard-railed "eat-back" calorie target for a day,
+ * given the kcal burned through logged exercise.
+ *
+ * - The base target is first raised to the safe floor if an aggressive deficit
+ *   pushed it below (capping the deficit rather than enabling restriction).
+ * - Exercise calories are then added on top so the adjusted target reflects the
+ *   extra energy expended. Language stays neutral — this is fuelling, not
+ *   "earning" food.
+ */
+export function calcAdjustedTarget(
+  sex: Sex,
+  bmr: number,
+  baseTarget: number,
+  exerciseKcal: number
+): AdjustedCalorieTarget {
+  const base = Math.round(baseTarget);
+  const roundedBmr = Math.round(bmr);
+  const floor = safeCalorieFloor(sex, bmr);
+  const capped = base < floor;
+  const safeBase = Math.max(base, floor);
+  const exercise = Math.max(0, Math.round(exerciseKcal));
+  const eatBack = exercise;
+  const adjusted = safeBase + eatBack;
+
+  let note: string | undefined;
+  if (capped) {
+    note =
+      `Your base target was raised to a safe minimum of ${floor} kcal — eating well below ` +
+      `this (or below your BMR) is not recommended. Aim for steady, sustainable progress.`;
+  }
+
+  return { base, exercise, eatBack, adjusted, bmr: roundedBmr, floor, capped, note };
 }
 
 // ---------------------------------------------------------------------------

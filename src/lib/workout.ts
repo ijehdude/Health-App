@@ -1,15 +1,31 @@
 import { EXERCISES } from '@/data/exercises';
 import { ageGroupOf } from './nutrition';
+import { SESSION_FOCUS_META } from './types';
 import type {
   AgeGroup,
   Exercise,
   ExerciseType,
   Intensity,
   Nutrition,
+  PlannedSession,
+  TrainingPlan,
   UserProfile,
   WorkoutPlan,
   WorkoutTrigger,
 } from './types';
+
+/** Finds the session a training plan prescribes for a given local date, if any. */
+export function plannedSessionForDate(
+  plan: TrainingPlan | null | undefined,
+  date: string
+): PlannedSession | undefined {
+  if (!plan) return undefined;
+  for (const week of plan.weeks) {
+    const match = week.sessions.find((s) => s.date === date);
+    if (match) return match;
+  }
+  return undefined;
+}
 
 const INTENSITY_RANK: Record<Intensity, number> = { light: 0, moderate: 1, vigorous: 2 };
 
@@ -134,6 +150,27 @@ function specFor(profile: UserProfile, total: Nutrition): PlanSpec {
   return { trigger: 'goal', reason: 'Goal-aligned training day', ...goalSpecs[profile.goal] };
 }
 
+/**
+ * Derives the supporting-exercise spec when a training-plan session governs the
+ * day. Runs/intervals get light complementary mobility + core; rest/recovery
+ * days get gentle flexibility work so "Today's Workout" never contradicts the
+ * plan by pushing a hard session on a prescribed rest day.
+ */
+function specForPlanned(profile: UserProfile, planned: PlannedSession): PlanSpec {
+  const meta = SESSION_FOCUS_META[planned.focus];
+  const isRest = planned.focus === 'rest' || planned.focus === 'recovery';
+  return {
+    trigger: 'goal',
+    reason: `Training plan: ${meta.label}`,
+    rationale: isRest
+      ? `Your training plan has you ${planned.focus === 'rest' ? 'resting' : 'recovering'} today — recovery is where adaptation happens. Below are optional gentle mobility moves; otherwise let your body absorb the work.`
+      : `Today's run comes from your race training plan: ${planned.title}. ${planned.description} The moves below are optional complements — keep them easy so they don't compromise the session.`,
+    intensity: isRest ? 'light' : planned.intensity,
+    types: isRest ? ['flexibility', 'recovery'] : ['flexibility', 'strength'],
+    count: isRest ? 3 : 2,
+  };
+}
+
 function eligiblePool(profile: UserProfile, maxIntensity: Intensity): Exercise[] {
   const ageGroup: AgeGroup = ageGroupOf(profile.age);
   return EXERCISES.filter((e) => {
@@ -144,8 +181,15 @@ function eligiblePool(profile: UserProfile, maxIntensity: Intensity): Exercise[]
   });
 }
 
-export function generateWorkoutPlan(profile: UserProfile, totalToday: Nutrition): WorkoutPlan {
-  const spec = specFor(profile, totalToday);
+export function generateWorkoutPlan(
+  profile: UserProfile,
+  totalToday: Nutrition,
+  planned?: PlannedSession
+): WorkoutPlan {
+  // When a race training plan prescribes a session today, it takes priority:
+  // the headline reflects the plan, and the supporting exercises become
+  // complementary mobility/strength (or recovery on rest days).
+  const spec = planned ? specForPlanned(profile, planned) : specFor(profile, totalToday);
   const pool = eligiblePool(profile, spec.intensity);
 
   const preferred = shuffle(pool.filter((e) => spec.types.includes(e.type)));
@@ -174,5 +218,6 @@ export function generateWorkoutPlan(profile: UserProfile, totalToday: Nutrition)
     exercises,
     alternatives,
     ageGroupNote,
+    planned,
   };
 }

@@ -315,4 +315,204 @@ export interface WorkoutPlan {
   exercises: Exercise[];
   alternatives: Exercise[];
   ageGroupNote?: string;
+  /**
+   * When a race training plan is active, the prescribed session for today is
+   * surfaced here so "Today's Workout" reflects the plan instead of (or
+   * alongside) the nutrition-triggered suggestion. See lib/workout.ts.
+   */
+  planned?: PlannedSession;
+}
+
+// ---------------------------------------------------------------------------
+// Exercise logging (Feature 1)
+// ---------------------------------------------------------------------------
+
+/** Broad activity category — used for icons, METs fallbacks and plan matching. */
+export type ExerciseModality =
+  | 'run'
+  | 'bike'
+  | 'swim'
+  | 'walk'
+  | 'row'
+  | 'strength'
+  | 'cardio'
+  | 'hiit'
+  | 'yoga'
+  | 'other';
+
+export const EXERCISE_MODALITIES: { value: ExerciseModality; label: string }[] = [
+  { value: 'run', label: 'Run' },
+  { value: 'bike', label: 'Cycle' },
+  { value: 'swim', label: 'Swim' },
+  { value: 'walk', label: 'Walk / hike' },
+  { value: 'row', label: 'Row' },
+  { value: 'strength', label: 'Strength' },
+  { value: 'cardio', label: 'Other cardio' },
+  { value: 'hiit', label: 'HIIT' },
+  { value: 'yoga', label: 'Yoga / mobility' },
+  { value: 'other', label: 'Other' },
+];
+
+/** Where a logged session came from — drives provenance UI and de-duping. */
+export type ExerciseSource = 'text' | 'file' | 'manual' | 'plan';
+
+export interface ExerciseSession {
+  id?: number;
+  date: string; // YYYY-MM-DD (local)
+  /** Human label, e.g. "Easy run", "Tempo intervals", "Upper body". */
+  activity: string;
+  modality: ExerciseModality;
+  durationMinutes: number;
+  distanceKm?: number;
+  /** Free-form pace string as parsed/entered, e.g. "5:36 /km". */
+  pace?: string;
+  intensity: Intensity;
+  /** Estimated energy expenditure for this session, kcal. */
+  caloriesBurned: number;
+  notes?: string;
+  source: ExerciseSource;
+  createdAt: string; // ISO datetime — also the cloud upsert key
+  synced: 0 | 1;
+}
+
+/** A parsed-but-not-yet-saved session shown in the confirm/edit preview. */
+export type ParsedExerciseSession = Omit<
+  ExerciseSession,
+  'id' | 'createdAt' | 'synced' | 'source'
+> & {
+  confidence: Confidence;
+};
+
+// ---------------------------------------------------------------------------
+// Race goal & training plan (Feature 3)
+// ---------------------------------------------------------------------------
+
+export type RaceDistance = '5k' | '10k' | 'half' | 'marathon' | 'custom';
+
+export const RACE_DISTANCES: { value: RaceDistance; label: string; km: number | null }[] = [
+  { value: '5k', label: '5K', km: 5 },
+  { value: '10k', label: '10K', km: 10 },
+  { value: 'half', label: 'Half marathon', km: 21.097 },
+  { value: 'marathon', label: 'Marathon', km: 42.195 },
+  { value: 'custom', label: 'Custom distance', km: null },
+];
+
+export type TrainingExperience = 'beginner' | 'intermediate' | 'advanced';
+
+export const TRAINING_EXPERIENCE: { value: TrainingExperience; label: string; description: string }[] = [
+  { value: 'beginner', label: 'Beginner', description: 'New to training, or running < 6 months / < 15 km per week' },
+  { value: 'intermediate', label: 'Intermediate', description: 'Run regularly, ~15–40 km per week, have raced before' },
+  { value: 'advanced', label: 'Advanced', description: 'Experienced, 40+ km per week, structured training' },
+];
+
+export interface RaceGoal {
+  id?: number;
+  raceType: RaceDistance;
+  /** Required when raceType === 'custom'. */
+  customDistanceKm?: number;
+  raceName?: string;
+  /** Target finish time as HH:MM:SS (or MM:SS), free-form. */
+  targetTime?: string;
+  raceDate: string; // YYYY-MM-DD
+  experience: TrainingExperience;
+  /** Current typical training volume, km/week. */
+  currentWeeklyKm?: number;
+  /** Free text, e.g. "ran 10K in 55:00 last month". */
+  recentPerformance?: string;
+  createdAt: string; // ISO — cloud upsert key
+  updatedAt: string;
+  synced: 0 | 1;
+}
+
+export type SessionFocus =
+  | 'easy'
+  | 'tempo'
+  | 'interval'
+  | 'long'
+  | 'rest'
+  | 'cross'
+  | 'recovery'
+  | 'race';
+
+export const SESSION_FOCUS_META: Record<SessionFocus, { label: string; tone: 'green' | 'amber' | 'red' | 'slate' }> = {
+  easy: { label: 'Easy run', tone: 'green' },
+  tempo: { label: 'Tempo', tone: 'amber' },
+  interval: { label: 'Intervals', tone: 'red' },
+  long: { label: 'Long run', tone: 'amber' },
+  cross: { label: 'Cross-train', tone: 'slate' },
+  recovery: { label: 'Recovery', tone: 'green' },
+  rest: { label: 'Rest', tone: 'slate' },
+  race: { label: 'Race', tone: 'red' },
+};
+
+export interface PlannedSession {
+  date: string; // YYYY-MM-DD
+  focus: SessionFocus;
+  title: string;
+  description: string;
+  durationMinutes?: number;
+  distanceKm?: number;
+  intensity: Intensity;
+}
+
+export interface TrainingWeek {
+  weekNumber: number;
+  startDate: string; // YYYY-MM-DD (Monday)
+  /** base / build / peak / taper, etc. */
+  phase: string;
+  focus: string;
+  totalKm?: number;
+  isDeload?: boolean;
+  sessions: PlannedSession[];
+}
+
+export interface TrainingPlan {
+  id?: number;
+  /** createdAt of the RaceGoal this plan was generated for. */
+  raceGoalCreatedAt?: string;
+  summary: string;
+  weeks: TrainingWeek[];
+  createdAt: string; // ISO — cloud upsert key
+  updatedAt: string;
+  synced: 0 | 1;
+}
+
+// ---------------------------------------------------------------------------
+// Exercise eat-back (Feature 2)
+// ---------------------------------------------------------------------------
+
+/** Transparent breakdown of how exercise raises today's calorie target. */
+export interface AdjustedCalorieTarget {
+  /** Profile's stored calorie target before any adjustment. */
+  base: number;
+  /** Total kcal burned through logged exercise today. */
+  exercise: number;
+  /** kcal actually added back to the target (after guardrails). */
+  eatBack: number;
+  /** Final recommended intake for the day. */
+  adjusted: number;
+  bmr: number;
+  /** Safe minimum intake (max of sex floor and BMR). */
+  floor: number;
+  /** True when the base target was below the safe floor and had to be raised. */
+  capped: boolean;
+  note?: string;
+}
+
+// ---------------------------------------------------------------------------
+// API contracts — fitness
+// ---------------------------------------------------------------------------
+
+export interface ParseExerciseResponse {
+  sessions: ParsedExerciseSession[];
+  warningMessage?: string;
+}
+
+export interface CoachMessage {
+  role: 'user' | 'coach';
+  content: string;
+}
+
+export interface CoachResponse {
+  reply: string;
 }

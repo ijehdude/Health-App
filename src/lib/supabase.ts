@@ -1,7 +1,18 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { db, getProfile, recomputeDailySummary } from './db';
-import { clearDeleteQueue, readDeleteQueue } from './syncQueue';
-import type { FoodLog, UserProfile } from './types';
+import {
+  clearDeleteBucket,
+  clearDeleteQueue,
+  readDeleteBucket,
+  readDeleteQueue,
+} from './syncQueue';
+import type {
+  ExerciseSession,
+  FoodLog,
+  RaceGoal,
+  TrainingPlan,
+  UserProfile,
+} from './types';
 
 let client: SupabaseClient | null = null;
 
@@ -23,6 +34,14 @@ export async function getAccessToken(): Promise<string | null> {
   if (!supabase) return null;
   const { data } = await supabase.auth.getSession();
   return data.session?.access_token ?? null;
+}
+
+/** JSON request headers with the Supabase bearer token when signed in. */
+export async function apiHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = await getAccessToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +96,9 @@ export async function fullSync(): Promise<SyncResult> {
   }
 
   await processPendingDeletes(supabase, userId);
-  const pulled = await pullFromCloud(supabase, userId);
-  const pushed = await pushToCloud(supabase, userId);
+  await processFitnessDeletes(supabase, userId);
+  const pulled = (await pullFromCloud(supabase, userId)) + (await pullFitness(supabase, userId));
+  const pushed = (await pushToCloud(supabase, userId)) + (await pushFitness(supabase, userId));
 
   const { count, error: countErr } = await supabase
     .from('food_logs')
@@ -121,6 +141,16 @@ export async function runFirstLoginMigration(userId: string): Promise<void> {
   }
   if ((await db.foodLogs.count()) > 0) {
     await db.foodLogs.toCollection().modify({ synced: 0 });
+  }
+  // Push any locally-created fitness records into the new cloud account too.
+  if ((await db.exerciseSessions.count()) > 0) {
+    await db.exerciseSessions.toCollection().modify({ synced: 0 });
+  }
+  if ((await db.raceGoals.count()) > 0) {
+    await db.raceGoals.toCollection().modify({ synced: 0 });
+  }
+  if ((await db.trainingPlans.count()) > 0) {
+    await db.trainingPlans.toCollection().modify({ synced: 0 });
   }
   await fullSync();
   localStorage.setItem(key, '1');
@@ -210,6 +240,26 @@ async function processPendingDeletes(supabase: SupabaseClient, userId: string): 
   if (storageErr) console.warn('[sync] Photo cleanup skipped:', storageErr.message);
 
   clearDeleteQueue();
+}
+
+/** Flushes queued deletes for the fitness tables (keyed by created_at). */
+async function processFitnessDeletes(supabase: SupabaseClient, userId: string): Promise<void> {
+  const buckets: { bucket: 'exercise-sessions' | 'race-goals' | 'training-plans'; table: string }[] = [
+    { bucket: 'exercise-sessions', table: 'exercise_sessions' },
+    { bucket: 'race-goals', table: 'race_goals' },
+    { bucket: 'training-plans', table: 'training_plans' },
+  ];
+  for (const { bucket, table } of buckets) {
+    const queue = readDeleteBucket(bucket);
+    if (queue.length === 0) continue;
+    const { error } = await supabase
+      .from(table)
+      .delete()
+      .eq('user_id', userId)
+      .in('created_at', queue);
+    if (error) throw new Error(`Could not delete cloud ${table}: ${error.message}`);
+    clearDeleteBucket(bucket);
+  }
 }
 
 async function pullFromCloud(supabase: SupabaseClient, userId: string): Promise<number> {
@@ -303,4 +353,129 @@ async function pushToCloud(supabase: SupabaseClient, userId: string): Promise<nu
   }
 
   return pending.length;
+}
+
+// ---------------------------------------------------------------------------
+// Fitness sync — exercise sessions (many, merge-by-createdAt) plus the
+// singleton race goal and training plan (newest updatedAt wins).
+// ---------------------------------------------------------------------------
+
+async function pullFitness(supabase: SupabaseClient, userId: string): Promise<number> {
+  let changed = 0;
+
+  // Exercise sessions — merge any cloud rows we don't already have.
+  const { data: exRows, error: exErr } = await supabase
+    .from('exercise_sessions')
+    .select('data')
+    .eq('user_id', userId);
+  if (exErr) throw new Error(`Could not read cloud exercise: ${exErr.message}`);
+
+  const existing = new Set((await db.exerciseSessions.toArray()).map((s) => s.createdAt));
+  const pendingDeletes = new Set(readDeleteBucket('exercise-sessions'));
+  for (const row of exRows ?? []) {
+    const s = row.data as ExerciseSession | null;
+    if (!s?.createdAt || existing.has(s.createdAt) || pendingDeletes.has(s.createdAt)) continue;
+    const { id: _id, ...rest } = s;
+    await db.exerciseSessions.add({ ...rest, synced: 1 });
+    changed++;
+  }
+
+  // Race goal — singleton, newest wins.
+  const localGoal = await db.raceGoals.orderBy('updatedAt').last();
+  const { data: goalRow } = await supabase
+    .from('race_goals')
+    .select('data')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (goalRow?.data) {
+    const cloudGoal = goalRow.data as RaceGoal;
+    if (
+      !readDeleteBucket('race-goals').includes(cloudGoal.createdAt) &&
+      (!localGoal || cloudGoal.updatedAt > localGoal.updatedAt)
+    ) {
+      const { id: _gid, ...rest } = cloudGoal;
+      await db.raceGoals.clear();
+      await db.raceGoals.add({ ...rest, synced: 1 } as RaceGoal);
+      changed++;
+    }
+  }
+
+  // Training plan — singleton, newest wins.
+  const localPlan = await db.trainingPlans.orderBy('updatedAt').last();
+  const { data: planRow } = await supabase
+    .from('training_plans')
+    .select('data')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (planRow?.data) {
+    const cloudPlan = planRow.data as TrainingPlan;
+    if (
+      !readDeleteBucket('training-plans').includes(cloudPlan.createdAt) &&
+      (!localPlan || cloudPlan.updatedAt > localPlan.updatedAt)
+    ) {
+      const { id: _pid, ...rest } = cloudPlan;
+      await db.trainingPlans.clear();
+      await db.trainingPlans.add({ ...rest, synced: 1 } as TrainingPlan);
+      changed++;
+    }
+  }
+
+  return changed;
+}
+
+async function pushFitness(supabase: SupabaseClient, userId: string): Promise<number> {
+  let pushed = 0;
+
+  const exPending = await db.exerciseSessions.where('synced').equals(0).toArray();
+  if (exPending.length > 0) {
+    const rows = exPending.map((s) => {
+      const { id: _id, ...rest } = s;
+      return {
+        user_id: userId,
+        date: s.date,
+        created_at: s.createdAt,
+        data: { ...rest, synced: 1 },
+      };
+    });
+    const { error } = await supabase
+      .from('exercise_sessions')
+      .upsert(rows, { onConflict: 'user_id,created_at' });
+    if (error) throw new Error(`Exercise sync failed: ${error.message}`);
+    await Promise.all(exPending.map((s) => db.exerciseSessions.update(s.id!, { synced: 1 })));
+    pushed += exPending.length;
+  }
+
+  const goalPending = await db.raceGoals.where('synced').equals(0).toArray();
+  if (goalPending.length > 0) {
+    const rows = goalPending.map((g) => {
+      const { id: _id, ...rest } = g;
+      return { user_id: userId, created_at: g.createdAt, data: { ...rest, synced: 1 } };
+    });
+    const { error } = await supabase
+      .from('race_goals')
+      .upsert(rows, { onConflict: 'user_id,created_at' });
+    if (error) throw new Error(`Race goal sync failed: ${error.message}`);
+    await Promise.all(goalPending.map((g) => db.raceGoals.update(g.id!, { synced: 1 })));
+    pushed += goalPending.length;
+  }
+
+  const planPending = await db.trainingPlans.where('synced').equals(0).toArray();
+  if (planPending.length > 0) {
+    const rows = planPending.map((p) => {
+      const { id: _id, ...rest } = p;
+      return { user_id: userId, created_at: p.createdAt, data: { ...rest, synced: 1 } };
+    });
+    const { error } = await supabase
+      .from('training_plans')
+      .upsert(rows, { onConflict: 'user_id,created_at' });
+    if (error) throw new Error(`Training plan sync failed: ${error.message}`);
+    await Promise.all(planPending.map((p) => db.trainingPlans.update(p.id!, { synced: 1 })));
+    pushed += planPending.length;
+  }
+
+  return pushed;
 }

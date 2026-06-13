@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { aiGenerateJson } from '@/lib/ai';
+import { validateSession } from '@/lib/serverAuth';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -36,6 +37,11 @@ Respond with ONLY a valid JSON object — no markdown, no commentary:
 Be specific — reference actual numbers from the data. Stay supportive and never give medical advice.`;
 
 export async function POST(req: Request) {
+  const session = await validateSession(req);
+  if (!session.ok) {
+    return NextResponse.json({ error: session.message }, { status: session.status });
+  }
+
   let body: z.infer<typeof requestSchema>;
   try {
     body = requestSchema.parse(await req.json());
