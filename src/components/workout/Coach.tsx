@@ -93,7 +93,7 @@ export default function Coach({ profile }: { profile: UserProfile }) {
   };
 
   return (
-    <div className="animate-fade-in flex h-[calc(100vh-13rem)] flex-col">
+    <div className="animate-fade-in flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col">
       <div className="flex-1 space-y-3 overflow-y-auto pb-2">
         {messages.length === 0 && (
           <div className="card space-y-3">
@@ -156,7 +156,12 @@ export default function Coach({ profile }: { profile: UserProfile }) {
       )}
 
       <div className="flex items-end gap-2 border-t border-slate-100 bg-white pt-3">
+        <label htmlFor="coach-input" className="sr-only">
+          Message to coach
+        </label>
         <textarea
+          id="coach-input"
+          aria-label="Message to coach"
           className="input max-h-32 min-h-[44px] flex-1 resize-none"
           value={input}
           onChange={(e) => setInput(e.target.value)}

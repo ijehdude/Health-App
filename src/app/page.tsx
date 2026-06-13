@@ -103,23 +103,27 @@ export default function DashboardPage() {
         {adjusted && (adjusted.exercise > 0 || adjusted.capped) && (
           <div className="w-full space-y-2">
             {adjusted.exercise > 0 && (
-              <div className="flex items-center justify-center gap-1.5 text-sm">
-                <span className="text-slate-500">Base {fmt(adjusted.base < adjusted.floor ? adjusted.floor : adjusted.base)}</span>
-                <span className="text-slate-300">+</span>
-                <span className="font-medium text-success-600">exercise {fmt(adjusted.exercise)}</span>
-                <span className="text-slate-300">=</span>
-                <span className="font-bold text-slate-900">{fmt(adjusted.adjusted)} kcal</span>
-              </div>
+              <>
+                <div className="flex items-stretch rounded-xl bg-slate-50 p-2.5 text-center">
+                  <CalcSegment label="Base" value={Math.max(adjusted.base, adjusted.floor)} />
+                  <CalcOp>+</CalcOp>
+                  <CalcSegment
+                    label="Exercise"
+                    value={adjusted.exercise}
+                    valueClass="text-success-600"
+                  />
+                  <CalcOp>=</CalcOp>
+                  <CalcSegment label="Adjusted" value={adjusted.adjusted} valueClass="text-primary-700" />
+                </div>
+                <p className="text-center text-xs text-slate-400">
+                  Target raised to fuel today&apos;s activity.
+                </p>
+              </>
             )}
             {adjusted.note && (
               <p className="flex items-start gap-2 rounded-xl bg-warning-50 px-3 py-2 text-xs text-warning-800">
                 <Info size={13} className="mt-0.5 shrink-0" />
                 <span>{adjusted.note}</span>
-              </p>
-            )}
-            {adjusted.exercise > 0 && (
-              <p className="text-center text-xs text-slate-400">
-                Target raised to fuel today&apos;s {fmt(adjusted.exercise)} kcal of activity.
               </p>
             )}
           </div>
@@ -185,6 +189,27 @@ export default function DashboardPage() {
       </section>
     </div>
   );
+
+  function CalcSegment({
+    label,
+    value,
+    valueClass,
+  }: {
+    label: string;
+    value: number;
+    valueClass?: string;
+  }) {
+    return (
+      <div className="min-w-0 flex-1">
+        <p className={cn('text-sm font-bold tabular-nums text-slate-900', valueClass)}>{fmt(value)}</p>
+        <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</p>
+      </div>
+    );
+  }
+
+  function CalcOp({ children }: { children: React.ReactNode }) {
+    return <div className="flex shrink-0 items-center px-1.5 text-sm font-semibold text-slate-300">{children}</div>;
+  }
 
   function NutrientGapList({ gaps: list }: { gaps: NutrientGap[] }) {
     return (

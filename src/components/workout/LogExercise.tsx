@@ -4,6 +4,10 @@ import { useRef, useState } from 'react';
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
+  Dumbbell,
+  FileSpreadsheet,
+  FileText,
   FileUp,
   Loader2,
   Plus,
@@ -12,9 +16,16 @@ import {
   Type,
 } from 'lucide-react';
 import Disclaimer from '@/components/Disclaimer';
+import ExerciseSVG from '@/components/ExerciseSVG';
 import { useExercise } from '@/hooks/useExercise';
 import { addExerciseSessions, deleteExerciseSession } from '@/lib/db';
-import { ACCEPTED_FILE_EXTENSIONS, extractFile, UnsupportedFileError } from '@/lib/fileExtract';
+import { exerciseIcon } from '@/lib/exerciseIcon';
+import {
+  ACCEPTED_FILE_EXTENSIONS,
+  extractFile,
+  type ExtractedKind,
+  UnsupportedFileError,
+} from '@/lib/fileExtract';
 import { apiHeaders, backgroundSync } from '@/lib/supabase';
 import {
   EXERCISE_MODALITIES,
@@ -38,6 +49,13 @@ const INTENSITY_PILL: Record<Intensity, string> = {
   vigorous: 'pill-red',
 };
 
+const KIND_ICON: Record<ExtractedKind, typeof FileText> = {
+  spreadsheet: FileSpreadsheet,
+  word: FileText,
+  pdf: FileText,
+  text: FileText,
+};
+
 function emptySession(): ParsedExerciseSession {
   return {
     date: dateStr(),
@@ -50,6 +68,18 @@ function emptySession(): ParsedExerciseSession {
   };
 }
 
+/** "45 min · 5.2 km · 5:36 /km" style metadata line. */
+function metaLine(s: ParsedExerciseSession): string {
+  return [
+    s.durationMinutes ? `${s.durationMinutes} min` : null,
+    s.distanceKm ? `${fmt(s.distanceKm)} km` : null,
+    s.pace || null,
+    s.caloriesBurned ? `${fmt(s.caloriesBurned)} kcal` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 export default function LogExercise({ profile }: { profile: UserProfile }) {
   const { sessions: todays, refresh } = useExercise();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -58,9 +88,11 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState('Analysing…');
+  const [fileInfo, setFileInfo] = useState<{ name: string; kind: ExtractedKind } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [preview, setPreview] = useState<ParsedExerciseSession[] | null>(null);
+  const [openRow, setOpenRow] = useState<number | null>(null);
   const [source, setSource] = useState<'text' | 'file'>('text');
   const [saving, setSaving] = useState(false);
 
@@ -69,6 +101,8 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
     setWarning(null);
     setError(null);
     setText('');
+    setFileInfo(null);
+    setOpenRow(null);
   };
 
   const callParse = async (
@@ -105,6 +139,7 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
       setSource(src);
       setWarning(parsed.warningMessage ?? null);
       setPreview(parsed.sessions);
+      setOpenRow(null);
     } catch (err) {
       console.error('[exercise] parse failed', { src, error: err });
       setError(err instanceof Error ? err.message : 'Could not parse the workout.');
@@ -125,6 +160,7 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
     setBusyLabel('Reading file…');
     try {
       const extracted = await extractFile(file);
+      setFileInfo({ name: file.name, kind: extracted.kind });
       setBusyLabel('Importing workouts…');
       const payload: Record<string, unknown> = { sourceHint: file.name };
       if (extracted.document) payload.document = extracted.document;
@@ -153,8 +189,12 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
   };
   const removeRow = (i: number) => {
     setPreview((prev) => prev && prev.filter((_, j) => j !== i));
+    setOpenRow(null);
   };
-  const addRow = () => setPreview((prev) => [...(prev ?? []), emptySession()]);
+  const addRow = () => {
+    setPreview((prev) => [...(prev ?? []), emptySession()]);
+    setOpenRow((prev) => (preview ? preview.length : (prev ?? 0)));
+  };
 
   const confirmSave = async () => {
     if (!preview || preview.length === 0) return;
@@ -197,16 +237,17 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
   if (preview) {
     return (
       <div className="animate-slide-up space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-900">Review parsed sessions</h2>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-slate-900">Review parsed sessions</h2>
+            <p className="text-sm text-slate-400">
+              {preview.length} {preview.length === 1 ? 'session' : 'sessions'} found · tap to edit
+            </p>
+          </div>
           <button type="button" className="btn-ghost" onClick={reset}>
             Cancel
           </button>
         </div>
-        <p className="text-sm text-slate-500">
-          Check these before saving — edit anything that looks off. Nothing is saved until you
-          confirm.
-        </p>
 
         {warning && (
           <div className="flex items-start gap-3 rounded-2xl border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800">
@@ -216,103 +257,146 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
         )}
 
         <div className="space-y-3">
-          {preview.map((s, i) => (
-            <div key={i} className="card space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className={INTENSITY_PILL[s.intensity]}>{s.intensity}</span>
-                <div className="flex items-center gap-2">
-                  <span className="pill bg-slate-100 text-slate-500">{s.confidence} confidence</span>
+          {preview.map((s, i) => {
+            const isOpen = openRow === i;
+            const { svgKey, type } = exerciseIcon(s.modality);
+            const meta = metaLine(s);
+            return (
+              <div key={i} className="card p-0 overflow-hidden">
+                <div className="flex items-stretch">
+                  <button
+                    type="button"
+                    onClick={() => setOpenRow(isOpen ? null : i)}
+                    className="flex min-w-0 flex-1 items-center gap-3 p-3 text-left"
+                  >
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-slate-50">
+                      <ExerciseSVG svgKey={svgKey} type={type} size={48} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold text-slate-900">
+                        {s.activity.trim() || 'New session'}
+                      </p>
+                      <p className="truncate text-xs text-slate-500">{meta || 'Tap to add details'}</p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        <span className={INTENSITY_PILL[s.intensity]}>{s.intensity}</span>
+                        <span className="pill bg-slate-100 text-slate-500">
+                          {new Date(s.date + 'T12:00:00').toLocaleDateString(undefined, {
+                            day: 'numeric',
+                            month: 'short',
+                          })}
+                        </span>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      size={18}
+                      className={cn(
+                        'shrink-0 text-slate-400 transition-transform',
+                        isOpen && 'rotate-180'
+                      )}
+                    />
+                  </button>
                   <button
                     type="button"
                     aria-label="Remove session"
                     onClick={() => removeRow(i)}
-                    className="rounded-lg p-1.5 text-slate-300 hover:bg-danger-50 hover:text-danger-600"
+                    className="flex w-12 shrink-0 items-center justify-center border-l border-slate-100 text-slate-300 transition-colors hover:bg-danger-50 hover:text-danger-600"
                   >
                     <Trash2 size={16} />
                   </button>
                 </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Activity" className="col-span-2">
-                  <input
-                    className="input"
-                    value={s.activity}
-                    onChange={(e) => updateRow(i, { activity: e.target.value })}
-                    placeholder="e.g. Easy run"
-                  />
-                </Field>
-                <Field label="Date">
-                  <input
-                    type="date"
-                    className="input"
-                    value={s.date}
-                    onChange={(e) => updateRow(i, { date: e.target.value })}
-                  />
-                </Field>
-                <Field label="Type">
-                  <select
-                    className="input"
-                    value={s.modality}
-                    onChange={(e) =>
-                      updateRow(i, { modality: e.target.value as ParsedExerciseSession['modality'] })
-                    }
-                  >
-                    {EXERCISE_MODALITIES.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Duration (min)">
-                  <input
-                    type="number"
-                    min={0}
-                    className="input"
-                    value={s.durationMinutes || ''}
-                    onChange={(e) => updateRow(i, { durationMinutes: Number(e.target.value) || 0 })}
-                  />
-                </Field>
-                <Field label="Distance (km)">
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.1"
-                    className="input"
-                    value={s.distanceKm ?? ''}
-                    onChange={(e) =>
-                      updateRow(i, {
-                        distanceKm: e.target.value === '' ? undefined : Number(e.target.value),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Intensity">
-                  <select
-                    className="input"
-                    value={s.intensity}
-                    onChange={(e) => updateRow(i, { intensity: e.target.value as Intensity })}
-                  >
-                    {INTENSITIES.map((x) => (
-                      <option key={x.value} value={x.value}>
-                        {x.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Calories (kcal)">
-                  <input
-                    type="number"
-                    min={0}
-                    className="input"
-                    value={s.caloriesBurned || ''}
-                    onChange={(e) => updateRow(i, { caloriesBurned: Number(e.target.value) || 0 })}
-                  />
-                </Field>
+                {isOpen && (
+                  <div className="animate-slide-up grid grid-cols-2 gap-3 border-t border-slate-100 p-4">
+                    <Field label="Activity" className="col-span-2">
+                      <input
+                        className="input"
+                        value={s.activity}
+                        onChange={(e) => updateRow(i, { activity: e.target.value })}
+                        placeholder="e.g. Easy run"
+                      />
+                    </Field>
+                    <Field label="Date">
+                      <input
+                        type="date"
+                        className="input"
+                        value={s.date}
+                        onChange={(e) => updateRow(i, { date: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Type">
+                      <select
+                        className="input"
+                        value={s.modality}
+                        onChange={(e) =>
+                          updateRow(i, {
+                            modality: e.target.value as ParsedExerciseSession['modality'],
+                          })
+                        }
+                      >
+                        {EXERCISE_MODALITIES.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Duration (min)">
+                      <input
+                        type="number"
+                        min={0}
+                        inputMode="numeric"
+                        className="input"
+                        value={s.durationMinutes || ''}
+                        onChange={(e) =>
+                          updateRow(i, { durationMinutes: Number(e.target.value) || 0 })
+                        }
+                      />
+                    </Field>
+                    <Field label="Distance (km)">
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        inputMode="decimal"
+                        className="input"
+                        value={s.distanceKm ?? ''}
+                        onChange={(e) =>
+                          updateRow(i, {
+                            distanceKm: e.target.value === '' ? undefined : Number(e.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="Intensity">
+                      <select
+                        className="input"
+                        value={s.intensity}
+                        onChange={(e) => updateRow(i, { intensity: e.target.value as Intensity })}
+                      >
+                        {INTENSITIES.map((x) => (
+                          <option key={x.value} value={x.value}>
+                            {x.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Calories (kcal)">
+                      <input
+                        type="number"
+                        min={0}
+                        inputMode="numeric"
+                        className="input"
+                        value={s.caloriesBurned || ''}
+                        onChange={(e) =>
+                          updateRow(i, { caloriesBurned: Number(e.target.value) || 0 })
+                        }
+                      />
+                    </Field>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <button type="button" className="btn-secondary w-full" onClick={addRow}>
@@ -332,7 +416,7 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
           disabled={saving || preview.length === 0}
         >
           {saving ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
-          Save {preview.length} {preview.length === 1 ? 'session' : 'sessions'}
+          Confirm &amp; save {preview.length} {preview.length === 1 ? 'session' : 'sessions'}
         </button>
         <Disclaimer />
       </div>
@@ -342,8 +426,11 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
   // -------------------------------------------------------------------------
   // Input screen
   // -------------------------------------------------------------------------
+  const FileKindIcon = fileInfo ? KIND_ICON[fileInfo.kind] : FileUp;
+
   return (
     <div className="animate-fade-in space-y-5">
+      {/* Mode toggle — mirrors the Log Food Photo/Text toggle */}
       <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
         {(
           [
@@ -379,7 +466,7 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
           />
           <button
             type="button"
-            className="btn-primary w-full py-3"
+            className="btn-primary w-full py-3.5"
             onClick={analyseText}
             disabled={busy || text.trim().length < 3}
           >
@@ -396,30 +483,48 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
         </div>
       ) : (
         <div className="card space-y-3">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={busy}
-            className="flex w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-10 transition-colors hover:border-primary-300"
-          >
-            {busy ? (
-              <>
-                <Loader2 size={26} className="animate-spin text-primary-500" />
-                <span className="text-sm font-medium text-slate-600">{busyLabel}</span>
-              </>
-            ) : (
-              <>
-                <FileUp size={26} className="text-slate-400" />
-                <span className="text-sm font-medium text-slate-600">
-                  Upload a past-workout file
-                </span>
-                <span className="text-xs text-slate-400">
-                  Excel, CSV, Word (.docx), PDF or text · Strava / Garmin / Apple Health exports or
-                  freeform logs
-                </span>
-              </>
-            )}
-          </button>
+          {busy && fileInfo ? (
+            /* Upload progress: file name + type + stage */
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
+              <div className="flex items-center gap-3">
+                <FileKindIcon size={22} className="shrink-0 text-primary-600" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-slate-800">{fileInfo.name}</p>
+                  <p className="text-xs capitalize text-slate-400">{fileInfo.kind} file</p>
+                </div>
+                <Loader2 size={18} className="shrink-0 animate-spin text-primary-600" />
+              </div>
+              <div className="progress-track">
+                <div className="progress-fill animate-pulse bg-primary-500" style={{ width: '70%' }} />
+              </div>
+              <p className="text-xs text-slate-500">{busyLabel}</p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+              className="flex w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-10 transition-colors hover:border-primary-300"
+            >
+              {busy ? (
+                <>
+                  <Loader2 size={26} className="animate-spin text-primary-500" />
+                  <span className="text-sm font-medium text-slate-600">{busyLabel}</span>
+                </>
+              ) : (
+                <>
+                  <FileUp size={26} className="text-slate-400" />
+                  <span className="text-sm font-medium text-slate-600">
+                    Upload a past-workout file
+                  </span>
+                  <span className="text-center text-xs text-slate-400">
+                    Excel, CSV, Word, PDF or text · Strava / Garmin / Apple Health exports or
+                    freeform logs
+                  </span>
+                </>
+              )}
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -448,37 +553,51 @@ export default function LogExercise({ profile }: { profile: UserProfile }) {
       <section className="card">
         <h2 className="mb-3 font-semibold text-slate-900">Logged today</h2>
         {todays.length === 0 ? (
-          <p className="py-4 text-center text-sm text-slate-400">No exercise logged yet today.</p>
+          <div className="flex flex-col items-center gap-2 py-6 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-50">
+              <Dumbbell size={22} className="text-slate-300" />
+            </div>
+            <p className="text-sm font-medium text-slate-600">No exercise logged yet today</p>
+            <p className="text-xs text-slate-400">
+              Describe a workout or upload a file above to get started.
+            </p>
+          </div>
         ) : (
           <ul className="space-y-2">
-            {todays.map((s) => (
-              <li
-                key={s.id}
-                className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-800">{s.activity}</p>
-                  <p className="text-xs text-slate-400">
-                    {s.durationMinutes} min
-                    {s.distanceKm ? ` · ${fmt(s.distanceKm)} km` : ''}
-                    {s.pace ? ` · ${s.pace}` : ''}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="text-sm font-semibold tabular-nums text-slate-700">
-                    {fmt(s.caloriesBurned)} kcal
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="Delete session"
-                    onClick={() => removeSaved(s.id)}
-                    className="rounded-lg p-1.5 text-slate-300 hover:bg-danger-50 hover:text-danger-600"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </li>
-            ))}
+            {todays.map((s) => {
+              const { svgKey, type } = exerciseIcon(s.modality);
+              return (
+                <li
+                  key={s.id}
+                  className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2.5"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <ExerciseSVG svgKey={svgKey} type={type} size={32} />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-800">{s.activity}</p>
+                      <p className="text-xs text-slate-400">
+                        {s.durationMinutes} min
+                        {s.distanceKm ? ` · ${fmt(s.distanceKm)} km` : ''}
+                        {s.pace ? ` · ${s.pace}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-sm font-semibold tabular-nums text-slate-700">
+                      {fmt(s.caloriesBurned)} kcal
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Delete session"
+                      onClick={() => removeSaved(s.id)}
+                      className="rounded-lg p-2 text-slate-300 hover:bg-danger-50 hover:text-danger-600"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

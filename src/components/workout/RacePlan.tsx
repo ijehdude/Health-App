@@ -36,13 +36,6 @@ import {
 } from '@/lib/types';
 import { addDays, cn, dateStr, fmt } from '@/lib/utils';
 
-const FOCUS_PILL: Record<'green' | 'amber' | 'red' | 'slate', string> = {
-  green: 'pill-green',
-  amber: 'pill-amber',
-  red: 'pill-red',
-  slate: 'pill bg-slate-100 text-slate-600',
-};
-
 function mondayOf(date: string): string {
   const d = new Date(date + 'T12:00:00');
   const sinceMonday = (d.getDay() + 6) % 7;
@@ -63,6 +56,7 @@ export default function RacePlan({ profile }: { profile: UserProfile }) {
   const { goal, plan, loading, refresh } = useRacePlan();
   const { refresh: refreshExercise } = useExercise();
   const [editing, setEditing] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -74,18 +68,28 @@ export default function RacePlan({ profile }: { profile: UserProfile }) {
     );
   }
 
-  if (!goal || editing) {
+  if (!goal && !creating) {
+    return <RaceEmptyState onStart={() => setCreating(true)} />;
+  }
+
+  if (editing || creating) {
     return (
       <GoalForm
-        existing={goal}
-        onCancel={goal ? () => setEditing(false) : undefined}
+        existing={editing ? goal : null}
+        onCancel={() => {
+          setEditing(false);
+          setCreating(false);
+        }}
         onSaved={async () => {
           setEditing(false);
+          setCreating(false);
           await refresh();
         }}
       />
     );
   }
+
+  if (!goal) return null;
 
   const raceInPast = goal.raceDate < dateStr();
 
@@ -255,6 +259,27 @@ export default function RacePlan({ profile }: { profile: UserProfile }) {
   );
 }
 
+function RaceEmptyState({ onStart }: { onStart: () => void }) {
+  return (
+    <div className="animate-fade-in space-y-5">
+      <section className="card flex flex-col items-center gap-3 text-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-50">
+          <Flag className="text-primary-600" size={26} />
+        </div>
+        <h2 className="text-lg font-bold text-slate-900">Set a race goal</h2>
+        <p className="max-w-xs text-sm text-slate-500">
+          Tell the coach what you&apos;re training for — a 5K, 10K, half or marathon — and get a
+          safe, personalised week-by-week plan that adapts as you log sessions.
+        </p>
+        <button type="button" className="btn-primary mt-1" onClick={onStart}>
+          <Flag size={18} /> Set your race goal
+        </button>
+      </section>
+      <Disclaimer />
+    </div>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl bg-slate-50 px-3 py-2">
@@ -268,24 +293,69 @@ function Stat({ label, value }: { label: string; value: string }) {
 // Plan view
 // ---------------------------------------------------------------------------
 
-function SessionRow({ s }: { s: PlannedSession }) {
+const INTENSITY_PILL: Record<'light' | 'moderate' | 'vigorous', string> = {
+  light: 'pill-green',
+  moderate: 'pill-amber',
+  vigorous: 'pill-red',
+};
+
+const FOCUS_TEXT: Record<'green' | 'amber' | 'red' | 'slate', string> = {
+  green: 'text-success-700',
+  amber: 'text-warning-700',
+  red: 'text-danger-600',
+  slate: 'text-slate-500',
+};
+
+function SessionRow({ s, isToday = false }: { s: PlannedSession; isToday?: boolean }) {
   const meta = SESSION_FOCUS_META[s.focus];
+  const isRest = s.focus === 'rest' || s.focus === 'recovery';
+  const d = new Date(s.date + 'T12:00:00');
+
   return (
-    <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2.5">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className={cn(FOCUS_PILL[meta.tone], 'shrink-0')}>{meta.label}</span>
-          <p className="truncate text-sm font-medium text-slate-800">{s.title}</p>
-        </div>
-        {s.description && <p className="mt-0.5 text-xs text-slate-400">{s.description}</p>}
+    <div
+      className={cn(
+        'flex items-center gap-3 rounded-xl px-3 py-2.5',
+        isRest ? 'border border-dashed border-slate-200 bg-slate-50/60' : 'bg-slate-50',
+        isToday && 'ring-2 ring-primary-400'
+      )}
+    >
+      {/* Date block */}
+      <div className="w-10 shrink-0 text-center">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+          {d.toLocaleDateString(undefined, { weekday: 'short' })}
+        </p>
+        <p className={cn('text-sm font-bold', isRest ? 'text-slate-400' : 'text-slate-700')}>
+          {d.getDate()}
+        </p>
       </div>
-      <span className="shrink-0 text-xs tabular-nums text-slate-400">
-        {new Date(s.date + 'T12:00:00').toLocaleDateString(undefined, {
-          weekday: 'short',
-          day: 'numeric',
-          month: 'short',
-        })}
-      </span>
+
+      {/* Type + title */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className={cn('text-[11px] font-semibold uppercase tracking-wide', FOCUS_TEXT[meta.tone])}>
+            {meta.label}
+          </span>
+          {isToday && <span className="pill bg-primary-600 text-white">Today</span>}
+        </div>
+        <p
+          className={cn(
+            'truncate text-sm font-medium',
+            isRest ? 'text-slate-500' : 'text-slate-800'
+          )}
+        >
+          {s.title}
+        </p>
+        {s.description && !isRest && (
+          <p className="truncate text-xs text-slate-400">{s.description}</p>
+        )}
+      </div>
+
+      {/* Intensity pill (carries its own text label; rest days read "Rest") */}
+      {isRest ? (
+        <span className="pill shrink-0 bg-slate-200 text-slate-500">Rest</span>
+      ) : (
+        <span className={cn(INTENSITY_PILL[s.intensity], 'shrink-0')}>{s.intensity}</span>
+      )}
     </div>
   );
 }
@@ -330,7 +400,7 @@ function PlanView({
           </h2>
           <div className="space-y-2">
             {upcoming.map((s, i) => (
-              <SessionRow key={`${s.date}-${i}`} s={s} />
+              <SessionRow key={`${s.date}-${i}`} s={s} isToday={s.date === today} />
             ))}
           </div>
         </section>
@@ -368,7 +438,7 @@ function PlanView({
               {isOpen && (
                 <div className="animate-slide-up space-y-2 border-t border-slate-100 px-4 py-4">
                   {w.sessions.map((s, i) => (
-                    <SessionRow key={`${s.date}-${i}`} s={s} />
+                    <SessionRow key={`${s.date}-${i}`} s={s} isToday={s.date === today} />
                   ))}
                 </div>
               )}
@@ -473,7 +543,7 @@ function GoalForm({
                 type="button"
                 onClick={() => setRaceType(d.value)}
                 className={cn(
-                  'rounded-xl border py-2 text-xs font-semibold transition-colors',
+                  'rounded-xl border py-2.5 text-xs font-semibold transition-colors',
                   raceType === d.value
                     ? 'border-primary-500 bg-primary-50 text-primary-700'
                     : 'border-slate-200 bg-slate-50 text-slate-500 hover:border-slate-300'
