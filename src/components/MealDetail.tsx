@@ -121,7 +121,7 @@ export default function MealDetail({ log, onClose, onChanged }: Props) {
       aria-modal="true"
     >
       <div
-        className="max-h-[90vh] w-full max-w-lg animate-slide-up overflow-y-auto rounded-t-2xl bg-white p-5 sm:rounded-2xl"
+        className="max-h-[90vh] w-full max-w-lg animate-slide-up overflow-y-auto rounded-t-2xl bg-white p-5 pb-[calc(5.5rem+env(safe-area-inset-bottom))] sm:rounded-2xl md:pb-5"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
