@@ -65,3 +65,16 @@
 .ring-progress {
   transition: stroke-dashoffset 1s cubic-bezier(0.22, 1, 0.36, 1);
 }
+
+/*
+ * Prevent iOS Safari from auto-zooming when a form field is focused.
+ * Safari zooms in whenever an input's font-size is below 16px (our fields
+ * use text-sm / 14px). Forcing 16px on touch-sized viewports stops the zoom.
+ */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
